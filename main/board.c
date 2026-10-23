@@ -25,8 +25,6 @@ static SemaphoreHandle_t frame_done;
 static portMUX_TYPE flip_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool flip_pending;
 static int display_core;
-static bool wifi_enabled;
-static unsigned wifi_clients;
 static int battery_percent = -1;
 static bool information_enabled = true;
 static bool maximum_fps_enabled;
@@ -216,18 +214,7 @@ static void present_back_buffer(bool fresh_content)
     frame_ready = true;
 }
 
-void board_wifi_indicator(bool enabled, unsigned clients)
-{
-    wifi_enabled = enabled;
-    wifi_clients = clients;
-    if (!frame_ready) return;
-    wait_for_back_buffer();
-    /* Update a paused/error screen too, without waiting for another video frame. */
-    memcpy(framebuffers[back_buffer], framebuffers[back_buffer ^ 1], PANEL_BYTES);
-    present_back_buffer(false);
-}
-
-void board_information_overlay(bool enabled, unsigned fps_x100)
+void board_information_overlay(bool enabled, unsigned fps_x100, bool maximum_fps)
 {
     bool redraw = information_enabled != enabled || maximum_fps_enabled != maximum_fps ||
         ((footer_fps_x100 == 0) != (fps_x100 == 0));

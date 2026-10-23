@@ -51,6 +51,8 @@ void app_main(void)
     ESP_LOGI("startup", "Startup screen presented");
     board_button_init();
     ESP_ERROR_CHECK(player_init());
+    ESP_ERROR_CHECK(usb_api_init());
+    ESP_ERROR_CHECK(usb_control_init());
     xTaskCreate(button_task, "button", 3072, NULL, 3, NULL);
     player_run();
 }
