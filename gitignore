@@ -1,0 +1,9 @@
+/build/
+/managed_components/
+/.venv/
+/.tools/
+/sdkconfig
+/sdkconfig.old
+/sdcard/
+/test-output/
+__pycache__/
