@@ -377,6 +377,12 @@ typedef struct
     bool started;
 } frame_reader_t;
 
+void check_heap(void) {
+    uint32_t free_heap = esp_get_free_heap_size();
+    
+    ESP_LOGI(TAG, "Free heap: %lu bytes", free_heap);
+}
+
 /* Only this worker touches the playback FILE while prefetching. The player joins
  * it before closing the FILE or acknowledging an upload/storage mutation. */
 static void frame_reader_task(void *arg)
