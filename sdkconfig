@@ -973,6 +973,7 @@ CONFIG_PARTITION_TABLE_MD5=y
 #
 # Keychain player
 #
+# default:
 CONFIG_KEYCHAIN_BENCHMARK_FRAMES=0
 # default:
 CONFIG_KEYCHAIN_AP_SSID="OLED-Keychain"
