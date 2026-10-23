@@ -8,13 +8,13 @@ typedef enum {
     COMMAND_TOGGLE_PAUSE, COMMAND_BRIGHTNESS,
     COMMAND_SELECT, COMMAND_REPLAY, COMMAND_SLEEP, COMMAND_WAKE,
     COMMAND_SLEEP_TIMER, COMMAND_DEEP_SLEEP, COMMAND_STORAGE_BEGIN, COMMAND_STORAGE_END,
-    COMMAND_OVERLAY, COMMAND_INFO_OVERLAY
+    COMMAND_OVERLAY, COMMAND_INFO_OVERLAY, COMMAND_MAX_FPS
 } player_command_type_t;
 typedef struct { player_command_type_t type; int value; } player_command_t;
 typedef struct {
     unsigned card_index, card_count, brightness;
-    bool paused, wifi_enabled, sleeping, storage_ready;
-    bool overlay_enabled, overlay_available, info_overlay_enabled;
+    bool paused, sleeping, storage_ready;
+    bool overlay_enabled, overlay_available, info_overlay_enabled, max_fps_enabled;
     unsigned sleep_remaining;
     unsigned playback_fps_x100, source_fps_x100, dropped_frames;
     unsigned battery_mv;

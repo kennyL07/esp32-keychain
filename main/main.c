@@ -1,6 +1,8 @@
 /* English-language firmware for Waveshare/Spotpear ESP32-S3-LCD-3.16. */
 #include "board.h"
 #include "player.h"
+#include "usb_api.h"
+#include "usb_control.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
@@ -9,7 +11,7 @@
 
 static void button_task(void *arg)
 {
-    bool previous = false, stable = false, held = false;
+    bool previous = false, stable = false;
     unsigned debounce = 0, pressed_ms = 0, released_ms = 0, clicks = 0;
     for (;;) {
         bool down = board_button_down();
@@ -17,16 +19,12 @@ static void button_task(void *arg)
         previous = down;
         if (debounce >= 30 && stable != down) {
             stable = down;
-            if (down) { pressed_ms = 0; held = false; }
-            else if (!held) { ++clicks; released_ms = 0; }
+            if (down) pressed_ms = 0;
+            else if (pressed_ms < 750) { ++clicks; released_ms = 0; }
+            else clicks = 0;
         }
         if (stable) {
-            pressed_ms += 10;
-            if (pressed_ms >= 2000 && !held) {
-                // player_send( some toggle function here , 0);
-                held = true;
-                clicks = 0;
-            }
+            if (pressed_ms < 750) pressed_ms += 10;
         } else if (clicks) {
             released_ms += 10;
             if (released_ms >= 300) {

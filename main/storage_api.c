@@ -1,4 +1,3 @@
-/* Local WPA2 AP protocol v2. Uploads remain hidden until validated and committed. */
 #include "storage_api.h"
 #include "board.h"
 #include "player.h"
@@ -107,7 +106,6 @@ static esp_err_t start(httpd_req_t *req)
     storage_api_cleanup();
     if (!player_storage_begin()) return fail(req, "503 Service Unavailable", "Player is busy. Retry upload.");
     upload_holds_player = true;
-    char transport[8];
     strcpy(upload_id, id);
     snprintf(staging, sizeof(staging), "%s/.incoming_%s", CARD_ROOT, id);
     remove_material(staging); /* Recover an incomplete upload left by a reset. */

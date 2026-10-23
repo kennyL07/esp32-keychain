@@ -29,6 +29,7 @@ static bool wifi_enabled;
 static unsigned wifi_clients;
 static int battery_percent = -1;
 static bool information_enabled = true;
+static bool maximum_fps_enabled;
 static unsigned footer_fps_x100;
 static bool frame_ready;
 static uint16_t *footer_background;
@@ -228,8 +229,10 @@ void board_wifi_indicator(bool enabled, unsigned clients)
 
 void board_information_overlay(bool enabled, unsigned fps_x100)
 {
-    bool redraw = information_enabled != enabled || ((footer_fps_x100 == 0) != (fps_x100 == 0));
+    bool redraw = information_enabled != enabled || maximum_fps_enabled != maximum_fps ||
+        ((footer_fps_x100 == 0) != (fps_x100 == 0));
     information_enabled = enabled;
+    maximum_fps_enabled = maximum_fps;
     footer_fps_x100 = fps_x100;
     if (!redraw || !frame_ready) return;
     wait_for_back_buffer();
@@ -308,8 +311,8 @@ void board_battery_indicator(int percent)
 
 static void draw_information_overlay(void)
 {
-    status_footer_t status = {.enabled = information_enabled, .wifi_enabled = wifi_enabled,
-        .wifi_clients = wifi_clients, .fps_x100 = footer_fps_x100, .battery_percent = battery_percent};
+    status_footer_t status = {.enabled = information_enabled, .fps_x100 = footer_fps_x100,
+        .battery_percent = battery_percent, .max_fps = maximum_fps_enabled};
     status_footer_draw(framebuffers[back_buffer], PANEL_WIDTH, PANEL_HEIGHT, &status);
 }
 

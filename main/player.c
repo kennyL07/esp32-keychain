@@ -58,6 +58,8 @@ static void save_settings(const player_status_t *settings)
         if (err == ESP_OK)
             err = nvs_set_u8(handle, "info_overlay", settings->info_overlay_enabled);
         if (err == ESP_OK)
+            err = nvs_set_u8(handle, "max_fps", settings->max_fps_enabled);
+        if (err == ESP_OK)
             err = nvs_commit(handle);
         nvs_close(handle);
     }
@@ -207,6 +209,16 @@ static void process_commands(void)
                 save_settings(&copy);
             }
             break;
+        case COMMAND_MAX_FPS:
+            if (copy.max_fps_enabled != (cmd.value != 0))
+            {
+                copy.max_fps_enabled = cmd.value != 0;
+                skip_intro = true;
+                ++generation;
+                save_settings(&copy);
+                ESP_LOGI(TAG, "Maximum FPS %s", copy.max_fps_enabled ? "enabled" : "disabled");
+            }
+            break;
         case COMMAND_SLEEP:
             copy.sleeping = true;
             sleep_deadline = 0;
@@ -233,16 +245,20 @@ static void process_commands(void)
             ++generation;
             break;
         }
+        portENTER_CRITICAL(&status_lock);
+        state = copy;
+        portEXIT_CRITICAL(&status_lock);
     }
     portENTER_CRITICAL(&status_lock);
     state.sleep_remaining = sleep_deadline > 0 ? (unsigned)((sleep_deadline - esp_timer_get_time() + 999999) / 1000000) : 0;
     bool information_enabled = state.info_overlay_enabled;
+    bool maximum_fps = state.max_fps_enabled;
     unsigned footer_fps = !state.paused && !state.sleeping && !maintenance && state.storage_ready &&
                                   state.card_count && !state.error[0]
                               ? state.playback_fps_x100
                               : 0;
     portEXIT_CRITICAL(&status_lock);
-    board_information_overlay(information_enabled, footer_fps);
+    board_information_overlay(information_enabled, footer_fps, maximum_fps);
 }
 
 esp_err_t player_init(void)
@@ -257,12 +273,14 @@ esp_err_t player_init(void)
                 state.overlay_enabled = enabled != 0;
             if (nvs_get_u8(settings, "info_overlay", &enabled) == ESP_OK)
                 state.info_overlay_enabled = enabled != 0;
+            if (nvs_get_u8(settings, "max_fps", &enabled) == ESP_OK)
+                state.max_fps_enabled = enabled != 0;
             if (nvs_get_u8(settings, "brightness", &enabled) == ESP_OK)
                 state.brightness = enabled;
             nvs_close(settings);
         }
     }
-    board_information_overlay(state.info_overlay_enabled, 0);
+    board_information_overlay(state.info_overlay_enabled, 0, state.max_fps_enabled);
     board_brightness(state.brightness);
     commands = xQueueCreate(16, sizeof(player_command_t));
     storage_ack = xSemaphoreCreateBinary();
@@ -493,13 +511,14 @@ static int play_stream(const char *path, unsigned expected_generation)
     int64_t period = 1000000LL * le16(header + 10) / le16(header + 8);
     int64_t due = esp_timer_get_time();
     int64_t first_presented = 0, first_paused = paused_time, last_report = due;
+    int64_t last_yield = due;
     unsigned skipped = 0;
     unsigned displayed = 0;
     int64_t read_total = 0, decode_total = 0, present_total = 0, read_wait_total = 0;
     ESP_LOGI(TAG, "Playing %s (%lu frames)%s", path, (unsigned long)frames, benchmark_remaining ? " [throughput test]" : "");
     for (uint32_t i = 0; i < frames; ++i)
     {
-        bool fast = benchmark_remaining > 0;
+        bool fast = player_status().max_fps_enabled || benchmark_remaining > 0;
         if (fast)
             due = esp_timer_get_time();
         /* Draw the newly selected first frame even when paused, then hold it. */
@@ -577,7 +596,8 @@ static int play_stream(const char *path, unsigned expected_generation)
         due += period;
         if (fast)
         {
-            --benchmark_remaining;
+            if (benchmark_remaining)
+                --benchmark_remaining;
             due = esp_timer_get_time();
         }
         int64_t now = esp_timer_get_time();
@@ -596,7 +616,13 @@ static int play_stream(const char *path, unsigned expected_generation)
                          (unsigned long)(present_total / (displayed ? displayed : 1)), skipped);
             last_report = now;
         }
-        vTaskDelay(1);
+        /* Maximum mode avoids a mandatory delay on every frame. Give idle a
+         * real scheduling slot at least every 100 ms for watchdog servicing. */
+        if (!fast || now - last_yield >= 100000)
+        {
+            vTaskDelay(1);
+            last_yield = esp_timer_get_time();
+        }
     }
     if (!wait_for_frame(&due, expected_generation))
         goto changed;
@@ -658,7 +684,7 @@ void player_run(void)
             state.error[0] = 0;
             portEXIT_CRITICAL(&status_lock);
             if (!count)
-                board_status("NO CARDS", "", "");
+                board_status("NO MATERIALS", "UPLOAD VIA USB", "OPEN KEYCHAIN STUDIO");
         }
         if (!count)
         {

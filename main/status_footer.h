@@ -4,8 +4,8 @@
 
 #define STATUS_FOOTER_HEIGHT 26
 typedef struct {
-    bool enabled, wifi_enabled;
-    unsigned wifi_clients, fps_x100;
+    bool enabled, max_fps;
+    unsigned fps_x100;
     int battery_percent;
 } status_footer_t;
 
