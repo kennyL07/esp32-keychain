@@ -18,15 +18,15 @@ static void button_task(void *arg)
             stable = down;
             if (down) pressed_ms = 0;
             else if (pressed_ms < 750) { ++clicks; released_ms = 0; }
-            else clicks = 0; /* Long holds have no action. */
+            else clicks = 0;
         }
         if (stable) {
             if (pressed_ms < 750) pressed_ms += 10;
         } else if (clicks) {
             released_ms += 10;
             if (released_ms >= 300) {
-                player_send(clicks >= 3 ? COMMAND_TOGGLE_MAX_FPS :
-                            clicks == 2 ? COMMAND_TOGGLE_PAUSE : COMMAND_NEXT);
+                player_send(clicks >= 3 ? MAX_FPS :
+                            clicks == 2 ? PAUSE : NEXT);
                 clicks = 0;
             }
         }
