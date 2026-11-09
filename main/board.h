@@ -9,7 +9,6 @@
 #define CARD_ROOT "/sdcard/epass"
 
 esp_err_t board_display_init(void);
-esp_err_t board_sd_mount(void);
 void board_present(const uint16_t *pixels);
 /* Only the player task may acquire/write this 16-byte-aligned, inactive LCD buffer. */
 uint16_t *board_back_buffer(void);

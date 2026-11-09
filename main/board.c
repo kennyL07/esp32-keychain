@@ -5,7 +5,6 @@
 #include <string.h>
 #include "driver/gpio.h"
 #include "driver/ledc.h"
-#include "driver/sdmmc_host.h"
 #include "esp_idf_version.h"
 #include "esp_lcd_panel_io_additions.h"
 #include "esp_lcd_panel_ops.h"
@@ -13,10 +12,8 @@
 #include "esp_lcd_st7701.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "sdmmc_cmd.h"
 
 static esp_lcd_panel_handle_t panel;
 static uint16_t *framebuffers[2];
@@ -235,7 +232,6 @@ void board_present(const uint16_t *pixels)
     present_back_buffer(true);
 }
 
-/* Compact 5x7 uppercase font for English startup and error messages. */
 static const uint8_t glyphs[][5] = {
     {0x7e,0x11,0x11,0x11,0x7e},{0x7f,0x49,0x49,0x49,0x36},
     {0x3e,0x41,0x41,0x41,0x22},{0x7f,0x41,0x41,0x22,0x1c},
@@ -311,34 +307,6 @@ void board_status(const char *a, const char *b, const char *c)
     text(b, 370, 2, 0xffff);
     text(c, 410, 2, 0xffff);
     present_back_buffer(true);
-}
-
-esp_err_t board_sd_mount(void)
-{
-    esp_vfs_fat_sdmmc_mount_config_t mount = {
-        .format_if_mount_failed = false, .max_files = 5, .allocation_unit_size = 16 * 1024
-    };
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
-    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot.width = 1;
-    slot.clk = 1; slot.cmd = 2; slot.d0 = 42;
-    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    sdmmc_card_t *card = NULL;
-    esp_err_t err = ESP_FAIL;
-    for (unsigned attempt = 0; attempt < 3; ++attempt) {
-        /* A USB warm reset can leave the card/host clock transition unsettled.
-         * The mount helper cleans up failed initialization; retry without
-         * formatting or changing any files on the card. */
-        err = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot, &mount, &card);
-        if (err == ESP_OK || err != ESP_ERR_TIMEOUT) break;
-        if (attempt < 2) {
-            ESP_LOGW("board", "SD startup timed out; retrying (%u/3)", attempt + 2);
-            vTaskDelay(pdMS_TO_TICKS(300));
-        }
-    }
-    if (err == ESP_OK) sdmmc_card_print_info(stdout, card);
-    return err;
 }
 
 void board_button_init(void)
