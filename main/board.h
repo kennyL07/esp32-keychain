@@ -3,20 +3,19 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define PANEL_WIDTH 320
-#define PANEL_HEIGHT 820
-#define PANEL_BYTES (PANEL_WIDTH * PANEL_HEIGHT * 2)
-#define CARD_ROOT "/sdcard/epass"
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 820
+#define PANEL_BYTES (SCREEN_WIDTH * SCREEN_HEIGHT * 2)
+#define CARD_ROOT "/sdcard/anims"
 
 esp_err_t board_display_init(void);
 void board_present(const uint16_t *pixels);
-/* Only the player task may acquire/write this 16-byte-aligned, inactive LCD buffer. */
 uint16_t *board_back_buffer(void);
-void board_status(const char *line1, const char *line2, const char *line3);
-void board_brightness(unsigned value);
-void board_information_overlay(bool enabled, unsigned fps_x100, bool maximum_fps);
-void board_battery_init(void);
-bool board_battery_read(unsigned *millivolts, int *percent);
-void board_battery_indicator(int percent);
-void board_button_init(void);
-bool board_button_down(void);
+void board_setStatus(const char *line1, const char *line2, const char *line3);
+void board_setBrightness(unsigned value);
+void board_infoOverlay(bool enabled, unsigned fps_x100, bool maximum_fps);
+void batteryInit(void);
+bool getBattery(unsigned *millivolts, int *percent);
+void setBatteryGliph(int percent);
+void buttonInit(void);
+bool ifButtonDown(void);

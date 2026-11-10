@@ -11,7 +11,7 @@ static void button_task(void *arg)
     bool previous = false, stable = false;
     unsigned debounce = 0, pressed_ms = 0, released_ms = 0, clicks = 0;
     for (;;) {
-        bool down = board_button_down();
+        bool down = ifButtonDown();
         debounce = down == previous ? debounce + 10 : 0;
         previous = down;
         if (debounce >= 30 && stable != down) {
@@ -36,10 +36,10 @@ static void button_task(void *arg)
 
 void app_main(void)
 {
-    ESP_LOGI("startup", "Keychain player starting");
+    ESP_LOGI("startup", "starting");
     ESP_ERROR_CHECK(board_display_init());
     ESP_LOGI("startup", "started");
-    board_button_init();
+    buttonInit();
     ESP_ERROR_CHECK(player_init());
     ESP_ERROR_CHECK(usb_disk_init());
     xTaskCreate(button_task, "button", 3072, NULL, 3, NULL);
