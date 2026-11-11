@@ -11,6 +11,12 @@
 #include "esp_jpeg_dec.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "sdkconfig.h"
+#ifndef CONFIG_KEYCHAIN_BENCHMARK_FRAMES
+#define CONFIG_KEYCHAIN_BENCHMARK_FRAMES 0
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -31,6 +37,18 @@ static bool skipIntro;
 static jpeg_dec_handle_t decoder;
 static uint8_t *jpegBuffer, *pixelBuffer;
 static int64_t pausedTime;
+static unsigned benchmarkRemaining = CONFIG_KEYCHAIN_BENCHMARK_FRAMES;
+
+static void saveMaxFps(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("player", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, "max_fps", state.maxFpsEnabled);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
 
 static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
 static uint32_t le32(const uint8_t *p)
@@ -64,12 +82,29 @@ static void processCommands(void)
         case commandTogglePause:
             state.paused = !state.paused;
             break;
+        case commandToggleMaxFps:
+            state.maxFpsEnabled = !state.maxFpsEnabled;
+            skipIntro = true;
+            ++generation;
+            saveMaxFps();
+            break;
         }
     }
 }
 
 esp_err_t playerInit(void)
 {
+    if (nvs_flash_init() == ESP_OK) {
+        nvs_handle_t settings;
+        if (nvs_open("player", NVS_READONLY, &settings) == ESP_OK) {
+            uint8_t enabled;
+            if (nvs_get_u8(settings, "overlay", &enabled) == ESP_OK) state.overlayEnabled = enabled != 0;
+            if (nvs_get_u8(settings, "info_overlay", &enabled) == ESP_OK) state.infoOverlayEnabled = enabled != 0;
+            if (nvs_get_u8(settings, "max_fps", &enabled) == ESP_OK) state.maxFpsEnabled = enabled != 0;
+            if (nvs_get_u8(settings, "brightness", &enabled) == ESP_OK) state.brightness = enabled;
+            nvs_close(settings);
+        }
+    }
     boardBrightness(state.brightness);
     commands = xQueueCreate(16, sizeof(playerCommandType));
     cards = heap_caps_calloc(maxCards, sizeof(*cards), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -205,7 +240,7 @@ static int playStream(const char *path, unsigned expectedGeneration)
         le16(header + 8) > 30 || le16(header + 10) > 1000 || !le32(header + 12) ||
         le32(header + 12) > 216000 || le32(header + 16) > maxJpeg || le32(header + 20)) {
         fclose(file);
-        setError("header");
+        setError("Invalid legacy EPV header.");
         return -1;
     }
     uint32_t frames = le32(header + 12), maxSize = le32(header + 16);
@@ -219,7 +254,7 @@ static int playStream(const char *path, unsigned expectedGeneration)
     unsigned displayed = 0;
     int64_t readTotal = 0, decodeTotal = 0, presentTotal = 0, readWaitTotal = 0;
     for (uint32_t i = 0; i < frames; ++i) {
-        bool fast = false;
+        bool fast = state.maxFpsEnabled || benchmarkRemaining > 0;
         if (fast) due = esp_timer_get_time();
 
         if (i && !waitForFrame(&due, expectedGeneration)) goto changed;
@@ -272,6 +307,7 @@ static int playStream(const char *path, unsigned expectedGeneration)
         if (prefetch) xQueueSend(reader.freeSlots, &frame.slot, portMAX_DELAY);
         due += period;
         if (fast) {
+            if (benchmarkRemaining) --benchmarkRemaining;
             due = esp_timer_get_time();
         }
         int64_t now = esp_timer_get_time();
@@ -297,7 +333,7 @@ changed:
 invalid:
     frameReaderStop(&reader);
     fclose(file);
-    setError("sd read error.");
+    setError("Invalid legacy video frame or SD read error.");
     return -1;
 }
 

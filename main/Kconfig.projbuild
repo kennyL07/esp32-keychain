@@ -1,0 +1,6 @@
+menu "keychain"
+    config KEYCHAIN_BENCHMARK_FRAMES
+        int "debug"
+        range 0 300
+        default 0
+endmenu

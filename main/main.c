@@ -23,7 +23,8 @@ static void buttonTask(void *arg)
         } else if (clicks) {
             releasedMs += 10;
             if (releasedMs >= 300) {
-                playerSend(clicks == 2 ? commandTogglePause : commandNext);
+                playerSend(clicks >= 3 ? commandToggleMaxFps :
+                            clicks == 2 ? commandTogglePause : commandNext);
                 clicks = 0;
             }
         }
