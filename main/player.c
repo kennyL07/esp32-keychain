@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <sys/stat.h>
 #include "esp_heap_caps.h"
 #include "esp_jpeg_dec.h"
@@ -13,16 +14,35 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 #define maxCards 128
 #define maxPath 537
 #define maxJpeg (1024 * 1024)
+static const char *tag = "player";
 static char (*cards)[maxPath];
-static jpeg_dec_handle_t decoder;
 static QueueHandle_t commands;
-static unsigned selectedIndex, count, generation;
-static bool paused;
+static struct {
+    unsigned cardIndex, cardCount, brightness, playbackFpsX100, sourceFpsX100;
+    bool paused, overlayEnabled, infoOverlayEnabled, maxFpsEnabled, hasError;
+} state = {.brightness = 180, .overlayEnabled = true, .infoOverlayEnabled = true};
+static unsigned generation;
+static bool skipIntro;
+static jpeg_dec_handle_t decoder;
+static uint8_t *jpegBuffer, *pixelBuffer;
 static int64_t pausedTime;
+
+static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
+static uint32_t le32(const uint8_t *p)
+{
+    return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void setError(const char *error)
+{
+    state.hasError = *error != 0;
+    if (*error) ESP_LOGE(tag, "%s", error);
+}
 
 bool playerSend(playerCommandType command)
 {
@@ -33,29 +53,27 @@ static void processCommands(void)
 {
     playerCommandType command;
     while (xQueueReceive(commands, &command, 0) == pdTRUE) {
-        if (count && command == commandNext) {
-            selectedIndex = (selectedIndex + 1) % count;
+        if (!state.cardCount) continue;
+        switch (command) {
+        case commandNext:
+            state.cardIndex = (state.cardIndex + 1) % state.cardCount;
+            state.hasError = false;
+            skipIntro = false;
             ++generation;
-        } else if (count && command == commandTogglePause) {
-            paused = !paused;
+            break;
+        case commandTogglePause:
+            state.paused = !state.paused;
+            break;
         }
     }
-}
-static uint8_t *jpegBuffer, *pixelBuffer;
-
-static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
-static uint32_t le32(const uint8_t *p)
-{
-    return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 esp_err_t playerInit(void)
 {
-    cards = heap_caps_calloc(maxCards, sizeof(*cards), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    jpegBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    pixelBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    boardBrightness(state.brightness);
     commands = xQueueCreate(16, sizeof(playerCommandType));
-    if (!commands || !cards || !jpegBuffer || !pixelBuffer) return ESP_ERR_NO_MEM;
+    cards = heap_caps_calloc(maxCards, sizeof(*cards), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!commands || !cards) return ESP_ERR_NO_MEM;
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
     return jpeg_dec_open(&config, &decoder) == JPEG_ERR_OK ? ESP_OK : ESP_FAIL;
@@ -92,49 +110,194 @@ static bool waitForFrame(int64_t *due, unsigned expectedGeneration)
         int64_t before = esp_timer_get_time();
         processCommands();
         if (generation != expectedGeneration) return false;
-        bool waitingForResume = paused;
+        bool waitingForResume = state.paused;
         if (!waitingForResume && before >= *due) return true;
         vTaskDelay(pdMS_TO_TICKS(5));
         if (waitingForResume) { int64_t delay = esp_timer_get_time() - before; *due += delay; pausedTime += delay; }
     }
 }
 
-static int playStream(const char *path, unsigned selectedGeneration)
+typedef struct {
+    unsigned slot;
+    uint32_t index, size;
+    int64_t readUs;
+    bool error;
+} compressedFrame;
+
+typedef struct {
+    FILE *file;
+    uint8_t *buffers[2];
+    uint32_t frames, maximum;
+    QueueHandle_t freeSlots, ready;
+    SemaphoreHandle_t done;
+    atomic_bool stop;
+    bool started;
+} frameReader;
+
+static void frameReaderTask(void *arg)
+{
+    frameReader *r = arg;
+    for (uint32_t i = 0; i < r->frames && !atomic_load(&r->stop); ++i) {
+        unsigned slot;
+        while (xQueueReceive(r->freeSlots, &slot, pdMS_TO_TICKS(20)) != pdTRUE) {
+            if (atomic_load(&r->stop)) goto done;
+        }
+        if (atomic_load(&r->stop)) goto done;
+        compressedFrame frame = {.slot = slot, .index = i};
+        uint8_t n[4];
+        int64_t start = esp_timer_get_time();
+        if (fread(n, 1, 4, r->file) != 4) frame.error = true;
+        else {
+            frame.size = le32(n);
+            if (frame.size < 4 || frame.size > r->maximum ||
+                fread(r->buffers[slot], 1, frame.size, r->file) != frame.size) frame.error = true;
+        }
+        frame.readUs = esp_timer_get_time() - start;
+        while (xQueueSend(r->ready, &frame, pdMS_TO_TICKS(20)) != pdTRUE) {
+            if (atomic_load(&r->stop)) goto done;
+        }
+        if (frame.error) break;
+    }
+done:
+    xSemaphoreGive(r->done);
+    vTaskDelete(NULL);
+}
+
+static void frameReaderStop(frameReader *r)
+{
+    if (r->started) { atomic_store(&r->stop, true); xSemaphoreTake(r->done, portMAX_DELAY); }
+    if (r->freeSlots) vQueueDelete(r->freeSlots);
+    if (r->ready) vQueueDelete(r->ready);
+    if (r->done) vSemaphoreDelete(r->done);
+    heap_caps_free(r->buffers[1]);
+    memset(r, 0, sizeof(*r));
+}
+
+static bool frameReaderStart(frameReader *r, FILE *file, uint32_t frames, uint32_t maximum)
+{
+    *r = (frameReader){.file = file, .frames = frames, .maximum = maximum};
+    atomic_init(&r->stop, false);
+    r->buffers[0] = jpegBuffer;
+    r->buffers[1] = heap_caps_aligned_alloc(16, maximum, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    r->freeSlots = xQueueCreate(2, sizeof(unsigned));
+    r->ready = xQueueCreate(2, sizeof(compressedFrame));
+    r->done = xSemaphoreCreateBinary();
+    if (!r->buffers[1] || !r->freeSlots || !r->ready || !r->done) goto failed;
+    for (unsigned i = 0; i < 2; ++i) xQueueSend(r->freeSlots, &i, 0);
+    if (xTaskCreatePinnedToCore(frameReaderTask, "video_sd", 6144, r, 2, NULL, 1) != pdPASS) goto failed;
+    r->started = true;
+    return true;
+failed:
+    frameReaderStop(r);
+    return false;
+}
+
+static int playStream(const char *path, unsigned expectedGeneration)
 {
     FILE *file = fopen(path, "rb");
     if (!file) return -1;
+    frameReader reader = {0};
+    setvbuf(file, NULL, _IOFBF, 32 * 1024);
     uint8_t header[24];
     if (fread(header, 1, sizeof(header), file) != sizeof(header) ||
         memcmp(header, "EPV1", 4) || le16(header + 4) != panelWidth ||
-        le16(header + 6) != panelHeight || !le16(header + 8) || !le16(header + 10))
-        goto invalid;
-    uint32_t frames = le32(header + 12);
+        le16(header + 6) != panelHeight || !le16(header + 8) || !le16(header + 10) ||
+        le16(header + 8) > 30 || le16(header + 10) > 1000 || !le32(header + 12) ||
+        le32(header + 12) > 216000 || le32(header + 16) > maxJpeg || le32(header + 20)) {
+        fclose(file);
+        setError("header");
+        return -1;
+    }
+    uint32_t frames = le32(header + 12), maxSize = le32(header + 16);
+    if (maxSize < 4) { fclose(file); return -1; }
+    bool prefetch = frameReaderStart(&reader, file, frames, maxSize);
     int64_t period = 1000000LL * le16(header + 10) / le16(header + 8);
     int64_t due = esp_timer_get_time();
+    int64_t firstPresented = 0, firstPaused = pausedTime, lastReport = due;
+    int64_t lastYield = due;
+    unsigned skipped = 0;
+    unsigned displayed = 0;
+    int64_t readTotal = 0, decodeTotal = 0, presentTotal = 0, readWaitTotal = 0;
     for (uint32_t i = 0; i < frames; ++i) {
-        if (!waitForFrame(&due, selectedGeneration)) { fclose(file); return 1; }
-        uint8_t length[4];
-        if (fread(length, 1, sizeof(length), file) != sizeof(length)) goto invalid;
-        uint32_t size = le32(length);
-        if (size < 4 || size > maxJpeg || fread(jpegBuffer, 1, size, file) != size)
-            goto invalid;
-        jpeg_dec_io_t io = {.inbuf = jpegBuffer, .inbuf_len = size, .outbuf = pixelBuffer};
-        jpeg_dec_header_info_t info = {0};
-        int outputSize = 0;
-        if (jpeg_dec_parse_header(decoder, &io, &info) != JPEG_ERR_OK ||
-            info.width != panelWidth || info.height != panelHeight ||
-            jpeg_dec_get_outbuf_len(decoder, &outputSize) != JPEG_ERR_OK ||
-            outputSize > maxJpeg || outputSize < panelBytes ||
-            jpeg_dec_process(decoder, &io) != JPEG_ERR_OK)
-            goto invalid;
-        boardPresent((const uint16_t *)pixelBuffer);
+        bool fast = false;
+        if (fast) due = esp_timer_get_time();
+
+        if (i && !waitForFrame(&due, expectedGeneration)) goto changed;
+        uint32_t size;
+        uint8_t *compressed = jpegBuffer;
+        compressedFrame frame = {0};
+        if (prefetch) {
+            int64_t waiting = esp_timer_get_time();
+            while (xQueueReceive(reader.ready, &frame, pdMS_TO_TICKS(10)) != pdTRUE) {
+                processCommands();
+                if (generation != expectedGeneration) goto changed;
+            }
+            readWaitTotal += esp_timer_get_time() - waiting;
+            if (frame.error || frame.index != i) goto invalid;
+            size = frame.size; compressed = reader.buffers[frame.slot];
+            readTotal += frame.readUs;
+        } else {
+            uint8_t sizeBytes[4];
+            if (fread(sizeBytes, 1, 4, file) != 4) goto invalid;
+            size = le32(sizeBytes);
+        }
+        if (size < 4 || size > maxSize || size > maxJpeg) goto invalid;
+        if (!fast && esp_timer_get_time() > due + period && i + 1 < frames) {
+            if (!prefetch && fseek(file, size, SEEK_CUR) != 0) goto invalid;
+            ++skipped;
+        } else {
+            int64_t stage = esp_timer_get_time();
+            if (!prefetch) {
+                if (fread(jpegBuffer, 1, size, file) != size) goto invalid;
+                readTotal += esp_timer_get_time() - stage;
+            }
+            stage = esp_timer_get_time();
+            jpeg_dec_io_t io = {.inbuf = compressed, .inbuf_len = size, .outbuf = pixelBuffer};
+            jpeg_dec_header_info_t info = {0};
+            int outputSize = 0;
+            if (jpeg_dec_parse_header(decoder, &io, &info) != JPEG_ERR_OK ||
+                info.width != panelWidth || info.height != panelHeight ||
+                jpeg_dec_get_outbuf_len(decoder, &outputSize) != JPEG_ERR_OK ||
+                outputSize > maxJpeg || outputSize < panelBytes) goto invalid;
+
+            io.outbuf = outputSize == panelBytes ? (uint8_t *)boardBackBuffer() : pixelBuffer;
+            if (jpeg_dec_process(decoder, &io) != JPEG_ERR_OK) goto invalid;
+            decodeTotal += esp_timer_get_time() - stage;
+            stage = esp_timer_get_time();
+            boardPresent((const uint16_t *)io.outbuf);
+            if (!firstPresented) { firstPresented = esp_timer_get_time(); firstPaused = pausedTime; }
+            presentTotal += esp_timer_get_time() - stage;
+            ++displayed;
+        }
+        if (prefetch) xQueueSend(reader.freeSlots, &frame.slot, portMAX_DELAY);
         due += period;
-        vTaskDelay(1);
+        if (fast) {
+            due = esp_timer_get_time();
+        }
+        int64_t now = esp_timer_get_time();
+        if (now-lastReport >= 2000000 || i+1 == frames) {
+            int64_t active = firstPresented ? now-firstPresented-(pausedTime-firstPaused) : 0;
+            state.playbackFpsX100 = active > 0 && displayed > 1 ? (unsigned)((displayed-1)*100000000ULL/active) : 0;
+            state.sourceFpsX100 = le16(header+8)*100/le16(header+10);
+            lastReport = now;
+        }
+
+        if (!fast || now - lastYield >= 100000) {
+            vTaskDelay(1);
+            lastYield = esp_timer_get_time();
+        }
     }
+    if (!waitForFrame(&due, expectedGeneration)) goto changed;
+    frameReaderStop(&reader);
     fclose(file);
     return 0;
+changed:
+    frameReaderStop(&reader);
+    fclose(file); return 1;
 invalid:
+    frameReaderStop(&reader);
     fclose(file);
+    setError("sd read error.");
     return -1;
 }
 
@@ -144,17 +307,27 @@ void playerRun(void)
         boardStatus("SD CARD ERROR", usbDiskError(), "");
         return;
     }
-    count = scanCards();
-    ESP_LOGI("player", "catalog has %u entries", count);
-    if (!count) {
+    state.cardCount = scanCards();
+    if (!state.cardCount) {
         boardStatus("NO MEDIA", "", "");
         return;
     }
     char path[maxPath + 24];
     for (;;) {
         unsigned selectedGeneration = generation;
-        snprintf(path, sizeof(path), "%s/loop.epv", cards[selectedIndex]);
-        if (playStream(path, selectedGeneration) < 0) {
+        jpegBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        pixelBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!jpegBuffer || !pixelBuffer) {
+            free(jpegBuffer);
+            free(pixelBuffer);
+            boardStatus("MEDIA ERROR", "NO MEMORY", "");
+            return;
+        }
+        snprintf(path, sizeof(path), "%s/loop.epv", cards[state.cardIndex]);
+        int result = playStream(path, selectedGeneration);
+        free(jpegBuffer);
+        free(pixelBuffer);
+        if (result < 0) {
             boardStatus("MEDIA ERROR", "", "");
             while (generation == selectedGeneration) {
                 processCommands();
