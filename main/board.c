@@ -187,16 +187,20 @@ uint16_t *boardBackBuffer(void)
 static void presentBackBuffer(bool freshContent)
 {
     uint16_t *footer = framebuffers[backBuffer] + (panelHeight - 26) * panelWidth;
-    if (freshContent) memcpy(footerBackground, footer, panelWidth * 26 * sizeof(uint16_t));
-    else memcpy(footer, footerBackground, panelWidth * 26 * sizeof(uint16_t));
+    if (freshContent)
+        memcpy(footerBackground, footer, panelWidth * 26 * sizeof(uint16_t));
+    else
+        memcpy(footer, footerBackground, panelWidth * 26 * sizeof(uint16_t));
     drawInformationOverlay();
-    while (xSemaphoreTake(frameDone, 0) == pdTRUE) {}
-
+    while (xSemaphoreTake(frameDone, 0) == pdTRUE)
+    {
+    }
     portENTER_CRITICAL(&flipLock);
     flipPending = true;
     esp_err_t err = esp_lcd_panel_draw_bitmap(panel, 0, 0, panelWidth, panelHeight,
-                                             framebuffers[backBuffer]);
-    if (err != ESP_OK) flipPending = false;
+                                              framebuffers[backBuffer]);
+    if (err != ESP_OK)
+        flipPending = false;
     portEXIT_CRITICAL(&flipLock);
     ESP_ERROR_CHECK(err);
     backBuffer ^= 1;
@@ -206,11 +210,12 @@ static void presentBackBuffer(bool freshContent)
 void boardInformationOverlay(bool enabled, unsigned fpsX100, bool maximumFps)
 {
     bool redraw = informationEnabled != enabled || maximumFpsEnabled != maximumFps ||
-        ((footerFpsX100 == 0) != (fpsX100 == 0));
+                  ((footerFpsX100 == 0) != (fpsX100 == 0));
     informationEnabled = enabled;
     maximumFpsEnabled = maximumFps;
     footerFpsX100 = fpsX100;
-    if (!redraw || !frameReady) return;
+    if (!redraw || !frameReady)
+        return;
     waitForBackBuffer();
     memcpy(framebuffers[backBuffer], framebuffers[backBuffer ^ 1], panelBytes);
     presentBackBuffer(false);
@@ -219,51 +224,42 @@ void boardInformationOverlay(bool enabled, unsigned fpsX100, bool maximumFps)
 void boardPresent(const uint16_t *pixels)
 {
     waitForBackBuffer();
-    if (pixels != framebuffers[backBuffer]) memcpy(framebuffers[backBuffer], pixels, panelBytes);
+    if (pixels != framebuffers[backBuffer])
+        memcpy(framebuffers[backBuffer], pixels, panelBytes);
     presentBackBuffer(true);
 }
 
 static const uint8_t glyphs[][5] = {
-    {0x7e,0x11,0x11,0x11,0x7e},{0x7f,0x49,0x49,0x49,0x36},
-    {0x3e,0x41,0x41,0x41,0x22},{0x7f,0x41,0x41,0x22,0x1c},
-    {0x7f,0x49,0x49,0x49,0x41},{0x7f,0x09,0x09,0x09,0x01},
-    {0x3e,0x41,0x49,0x49,0x7a},{0x7f,0x08,0x08,0x08,0x7f},
-    {0x00,0x41,0x7f,0x41,0x00},{0x20,0x40,0x41,0x3f,0x01},
-    {0x7f,0x08,0x14,0x22,0x41},{0x7f,0x40,0x40,0x40,0x40},
-    {0x7f,0x02,0x0c,0x02,0x7f},{0x7f,0x04,0x08,0x10,0x7f},
-    {0x3e,0x41,0x41,0x41,0x3e},{0x7f,0x09,0x09,0x09,0x06},
-    {0x3e,0x41,0x51,0x21,0x5e},{0x7f,0x09,0x19,0x29,0x46},
-    {0x46,0x49,0x49,0x49,0x31},{0x01,0x01,0x7f,0x01,0x01},
-    {0x3f,0x40,0x40,0x40,0x3f},{0x1f,0x20,0x40,0x20,0x1f},
-    {0x3f,0x40,0x38,0x40,0x3f},{0x63,0x14,0x08,0x14,0x63},
-    {0x07,0x08,0x70,0x08,0x07},{0x61,0x51,0x49,0x45,0x43},
-    {0x3e,0x51,0x49,0x45,0x3e},{0x00,0x42,0x7f,0x40,0x00},
-    {0x42,0x61,0x51,0x49,0x46},{0x21,0x41,0x45,0x4b,0x31},
-    {0x18,0x14,0x12,0x7f,0x10},{0x27,0x45,0x45,0x45,0x39},
-    {0x3c,0x4a,0x49,0x49,0x30},{0x01,0x71,0x09,0x05,0x03},
-    {0x36,0x49,0x49,0x49,0x36},{0x06,0x49,0x49,0x29,0x1e}
-};
+    {0x7e, 0x11, 0x11, 0x11, 0x7e}, {0x7f, 0x49, 0x49, 0x49, 0x36}, {0x3e, 0x41, 0x41, 0x41, 0x22}, {0x7f, 0x41, 0x41, 0x22, 0x1c}, {0x7f, 0x49, 0x49, 0x49, 0x41}, {0x7f, 0x09, 0x09, 0x09, 0x01}, {0x3e, 0x41, 0x49, 0x49, 0x7a}, {0x7f, 0x08, 0x08, 0x08, 0x7f}, {0x00, 0x41, 0x7f, 0x41, 0x00}, {0x20, 0x40, 0x41, 0x3f, 0x01}, {0x7f, 0x08, 0x14, 0x22, 0x41}, {0x7f, 0x40, 0x40, 0x40, 0x40}, {0x7f, 0x02, 0x0c, 0x02, 0x7f}, {0x7f, 0x04, 0x08, 0x10, 0x7f}, {0x3e, 0x41, 0x41, 0x41, 0x3e}, {0x7f, 0x09, 0x09, 0x09, 0x06}, {0x3e, 0x41, 0x51, 0x21, 0x5e}, {0x7f, 0x09, 0x19, 0x29, 0x46}, {0x46, 0x49, 0x49, 0x49, 0x31}, {0x01, 0x01, 0x7f, 0x01, 0x01}, {0x3f, 0x40, 0x40, 0x40, 0x3f}, {0x1f, 0x20, 0x40, 0x20, 0x1f}, {0x3f, 0x40, 0x38, 0x40, 0x3f}, {0x63, 0x14, 0x08, 0x14, 0x63}, {0x07, 0x08, 0x70, 0x08, 0x07}, {0x61, 0x51, 0x49, 0x45, 0x43}, {0x3e, 0x51, 0x49, 0x45, 0x3e}, {0x00, 0x42, 0x7f, 0x40, 0x00}, {0x42, 0x61, 0x51, 0x49, 0x46}, {0x21, 0x41, 0x45, 0x4b, 0x31}, {0x18, 0x14, 0x12, 0x7f, 0x10}, {0x27, 0x45, 0x45, 0x45, 0x39}, {0x3c, 0x4a, 0x49, 0x49, 0x30}, {0x01, 0x71, 0x09, 0x05, 0x03}, {0x36, 0x49, 0x49, 0x49, 0x36}, {0x06, 0x49, 0x49, 0x29, 0x1e}};
 
 static void textAt(const char *message, int x, int y, int scale, uint16_t color)
 {
     int length = strlen(message);
-    if (x < 0) x = 0;
+    if (x < 0)
+        x = 0;
     uint16_t *fb = framebuffers[backBuffer];
-    for (int i = 0; i < length; ++i) {
+    for (int i = 0; i < length; ++i)
+    {
         char c = message[i];
-        int glyph = c >= 'A' && c <= 'Z' ? c - 'A' : c >= '0' && c <= '9' ? c - '0' + 26 : -1;
-        static const uint8_t percentGlyph[5] = {0x63,0x13,0x08,0x64,0x63};
-        static const uint8_t unknownGlyph[5] = {0x02,0x01,0x51,0x09,0x06};
-        const uint8_t *shape = glyph >= 0 ? glyphs[glyph] : c == '%' ? percentGlyph : c == '?' ? unknownGlyph : NULL;
-        if (!shape) continue;
+        int glyph = c >= 'A' && c <= 'Z' ? c - 'A' : c >= '0' && c <= '9' ? c - '0' + 26
+                                                                          : -1;
+        static const uint8_t percentGlyph[5] = {0x63, 0x13, 0x08, 0x64, 0x63};
+        static const uint8_t unknownGlyph[5] = {0x02, 0x01, 0x51, 0x09, 0x06};
+        const uint8_t *shape = glyph >= 0 ? glyphs[glyph] : c == '%' ? percentGlyph
+                                                        : c == '?'   ? unknownGlyph
+                                                                     : NULL;
+        if (!shape)
+            continue;
         for (int col = 0; col < 5; ++col)
             for (int row = 0; row < 7; ++row)
                 if (shape[col] & (1 << row))
                     for (int dy = 0; dy < scale; ++dy)
-                        for (int dx = 0; dx < scale; ++dx) {
+                        for (int dx = 0; dx < scale; ++dx)
+                        {
                             int xx = x + (i * 6 + col) * scale + dx;
                             int yy = y + row * scale + dy;
-                            if (xx >= 0 && yy >= 0 && xx < panelWidth && yy < panelHeight) fb[yy * panelWidth + xx] = color;
+                            if (xx >= 0 && yy >= 0 && xx < panelWidth && yy < panelHeight)
+                                fb[yy * panelWidth + xx] = color;
                         }
     }
 }
@@ -275,9 +271,11 @@ static void text(const char *message, int y, int scale, uint16_t color)
 
 void boardBatteryIndicator(int percent)
 {
-    if (percent == batteryPercent) return;
+    if (percent == batteryPercent)
+        return;
     batteryPercent = percent;
-    if (!frameReady) return;
+    if (!frameReady)
+        return;
     waitForBackBuffer();
     memcpy(framebuffers[backBuffer], framebuffers[backBuffer ^ 1], panelBytes);
     presentBackBuffer(false);
@@ -285,8 +283,7 @@ void boardBatteryIndicator(int percent)
 
 static void drawInformationOverlay(void)
 {
-    statusFooter status = {.enabled = informationEnabled, .fpsX100 = footerFpsX100,
-        .batteryPercent = batteryPercent, .maxFps = maximumFpsEnabled};
+    statusFooter status = {.enabled = informationEnabled, .fpsX100 = footerFpsX100, .batteryPercent = batteryPercent, .maxFps = maximumFpsEnabled};
     statusFooterDraw(framebuffers[backBuffer], panelWidth, panelHeight, &status);
 }
 
@@ -302,8 +299,7 @@ void boardStatus(const char *a, const char *b, const char *c)
 
 void boardButtonInit(void)
 {
-    gpio_config_t config = {.pin_bit_mask = 1ULL, .mode = GPIO_MODE_INPUT,
-                            .pull_up_en = GPIO_PULLUP_ENABLE};
+    gpio_config_t config = {.pin_bit_mask = 1ULL, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE};
     ESP_ERROR_CHECK(gpio_config(&config));
 }
 
