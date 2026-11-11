@@ -20,6 +20,7 @@ static char (*cards)[maxPath];
 static jpeg_dec_handle_t decoder;
 static QueueHandle_t commands;
 static unsigned selectedIndex, count, generation;
+static bool paused;
 
 bool playerSend(playerCommandType command)
 {
@@ -33,6 +34,8 @@ static void processCommands(void)
         if (count && command == commandNext) {
             selectedIndex = (selectedIndex + 1) % count;
             ++generation;
+        } else if (count && command == commandTogglePause) {
+            paused = !paused;
         }
     }
 }
@@ -94,6 +97,10 @@ static int playStream(const char *path, unsigned selectedGeneration)
     unsigned delayMs = 1000 * le16(header + 10) / le16(header + 8);
     for (uint32_t i = 0; i < frames; ++i) {
         processCommands();
+        while (paused && generation == selectedGeneration) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            processCommands();
+        }
         if (generation != selectedGeneration) { fclose(file); return 1; }
         uint8_t length[4];
         if (fread(length, 1, sizeof(length), file) != sizeof(length)) goto invalid;

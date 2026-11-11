@@ -6,11 +6,27 @@
 
 static void buttonTask(void *arg)
 {
-    bool previous = false;
+    bool previous = false, stable = false;
+    unsigned debounce = 0, pressedMs = 0, releasedMs = 0, clicks = 0;
     for (;;) {
         bool down = boardButtonDown();
-        if (down && !previous) playerSend(commandNext);
+        debounce = down == previous ? debounce + 10 : 0;
         previous = down;
+        if (debounce >= 30 && stable != down) {
+            stable = down;
+            if (down) pressedMs = 0;
+            else if (pressedMs < 750) { ++clicks; releasedMs = 0; }
+            else clicks = 0;
+        }
+        if (stable) {
+            if (pressedMs < 750) pressedMs += 10;
+        } else if (clicks) {
+            releasedMs += 10;
+            if (releasedMs >= 300) {
+                playerSend(clicks == 2 ? commandTogglePause : commandNext);
+                clicks = 0;
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
