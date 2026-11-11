@@ -37,6 +37,7 @@ static unsigned generation;
 static bool skipIntro;
 static jpeg_dec_handle_t decoder;
 static uint8_t *jpegBuffer, *pixelBuffer;
+static bool handoff;
 static int64_t pausedTime;
 static unsigned benchmarkRemaining = CONFIG_KEYCHAIN_BENCHMARK_FRAMES;
 
@@ -70,6 +71,10 @@ bool playerSend(playerCommandType command)
 
 static void processCommands(void)
 {
+    if (usbDiskRequested() && !handoff) {
+        handoff = true;
+        ++generation;
+    }
     if (esp_timer_get_time() >= batteryDue) {
         batteryDue = esp_timer_get_time() + 10000000;
         unsigned mv;
@@ -79,7 +84,7 @@ static void processCommands(void)
     }
     playerCommandType command;
     while (xQueueReceive(commands, &command, 0) == pdTRUE) {
-        if (!state.cardCount) continue;
+        if (handoff || !state.cardCount) continue;
         switch (command) {
         case commandNext:
             state.cardIndex = (state.cardIndex + 1) % state.cardCount;
@@ -98,7 +103,7 @@ static void processCommands(void)
             break;
         }
     }
-    unsigned fps = !state.paused && state.cardCount && !state.hasError
+    unsigned fps = !state.paused && !handoff && state.cardCount && !state.hasError
         ? state.playbackFpsX100 : 0;
     boardInformationOverlay(state.infoOverlayEnabled, fps, state.maxFpsEnabled);
 }
@@ -351,20 +356,57 @@ invalid:
     return -1;
 }
 
+static void waitUntilChanged(unsigned selectedGeneration)
+{
+    while (generation == selectedGeneration) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        processCommands();
+    }
+}
+
 void playerRun(void)
 {
-    if (!usbDiskLocal()) {
-        boardStatus("SD CARD ERROR", usbDiskError(), "");
-        return;
-    }
-    state.cardCount = scanCards();
-    if (!state.cardCount) {
-        boardStatus("NO MEDIA", "", "");
-        return;
-    }
-    char path[maxPath + 24];
+    unsigned count = 0;
+    bool indexed = false, showedUsb = false, showedError = false;
     for (;;) {
-        unsigned selectedGeneration = generation;
+        processCommands();
+        if (usbDiskRequested()) {
+            usbDiskPlayerIdle();
+            if (!showedUsb) {
+                indexed = false;
+                count = 0;
+                state.cardCount = 0;
+                state.playbackFpsX100 = state.sourceFpsX100 = 0;
+                setError("");
+                boardStatus("UPLOAD", "", "");
+                showedUsb = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        handoff = false;
+        showedUsb = false;
+        if (!usbDiskLocal()) {
+            if (!showedError) {
+                boardStatus("SD CARD ERROR", usbDiskError(), "");
+                showedError = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        showedError = false;
+        if (!indexed) {
+            count = scanCards();
+            if (usbDiskRequested()) continue;
+            indexed = true;
+            state.cardCount = count;
+            state.cardIndex = 0;
+            state.paused = false;
+            skipIntro = false;
+            if (!count) boardStatus("NO MEDIA", "", "");
+        }
+        if (!count) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+        unsigned selected = state.cardIndex, selectedGeneration = generation;
         jpegBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         pixelBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!jpegBuffer || !pixelBuffer) {
@@ -373,7 +415,8 @@ void playerRun(void)
             boardStatus("MEDIA ERROR", "NO MEMORY", "");
             return;
         }
-        snprintf(path, sizeof(path), "%s/loop.epv", cards[state.cardIndex]);
+        char path[maxPath + 24];
+        snprintf(path, sizeof(path), "%s/loop.epv", cards[selected]);
         int result = playStream(path, selectedGeneration);
         free(jpegBuffer);
         free(pixelBuffer);
