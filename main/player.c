@@ -412,20 +412,35 @@ void playerRun(void)
         if (!jpegBuffer || !pixelBuffer) {
             free(jpegBuffer);
             free(pixelBuffer);
-            boardStatus("MEDIA ERROR", "NO MEMORY", "");
-            return;
+            boardStatus("MEDIA ERROR", "", "");
+            waitUntilChanged(selectedGeneration);
+            continue;
         }
         char path[maxPath + 24];
-        snprintf(path, sizeof(path), "%s/loop.epv", cards[selected]);
-        int result = playStream(path, selectedGeneration);
-        free(jpegBuffer);
-        free(pixelBuffer);
-        if (result < 0) {
-            boardStatus("MEDIA ERROR", "", "");
-            while (generation == selectedGeneration) {
-                processCommands();
-                vTaskDelay(pdMS_TO_TICKS(20));
+        char alternate[maxPath + 24];
+        struct stat info;
+        snprintf(path, sizeof(path), "%s/intro.epv", cards[selected]);
+        bool hasIntro = stat(path, &info) == 0;
+        snprintf(alternate, sizeof(alternate), "%s/intro-clean.epv", cards[selected]);
+        bool hasCleanIntro = stat(alternate, &info) == 0;
+        snprintf(alternate, sizeof(alternate), "%s/loop-clean.epv", cards[selected]);
+        bool hasClean = stat(alternate, &info) == 0 && S_ISREG(info.st_mode) && (!hasIntro || hasCleanIntro);
+        bool clean = hasClean && !state.overlayEnabled;
+        snprintf(path, sizeof(path), "%s/intro%s.epv", cards[selected], clean ? "-clean" : "");
+        bool playIntro = !skipIntro;
+        skipIntro = false;
+        if (playIntro && stat(path, &info) == 0) {
+            int result = playStream(path, selectedGeneration);
+        }
+        snprintf(path, sizeof(path), "%s/loop%s.epv", cards[selected], clean ? "-clean" : "");
+        while (generation == selectedGeneration) {
+            int result = playStream(path, selectedGeneration);
+            if (result > 0) break;
+            if (result < 0) {
+                waitUntilChanged(selectedGeneration);
             }
         }
+        free(jpegBuffer);
+        free(pixelBuffer);
     }
 }
