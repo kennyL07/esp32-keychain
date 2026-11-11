@@ -8,8 +8,6 @@ if (-not (Test-Path -LiteralPath $image)) { throw "Firmware image is missing: $i
 if (-not (Test-Path -LiteralPath $Python)) { throw 'Pass -Python with an executable that has esptool installed.' }
 $contents = [IO.File]::ReadAllBytes($image)
 if ($contents.Length -le 0x10000) { throw 'The merged firmware image is incomplete.' }
-# The project partition table puts NVS at 0x9000 and PHY data at 0xF000.
-# Do not write the merged image's padding over saved settings during updates.
 $bootFile = [IO.Path]::GetTempFileName()
 $appFile = [IO.Path]::GetTempFileName()
 try {

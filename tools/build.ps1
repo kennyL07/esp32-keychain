@@ -42,7 +42,6 @@ try {
         & $pythonExe (Join-Path $IdfPath 'tools\idf.py') reconfigure
         if ($LASTEXITCODE -ne 0) { throw 'Initial project configuration failed.' }
     }
-    # Timestamps problems when compiling with a vpn
     $now = [DateTime]::UtcNow
     if (Test-Path -LiteralPath 'managed_components') {
         Get-ChildItem -LiteralPath 'managed_components' -File -Recurse |

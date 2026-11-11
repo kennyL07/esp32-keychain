@@ -4,9 +4,9 @@
 #include "esp_err.h"
 
 typedef enum {
-    NEXT, PAUSE, MAX_FPS
-} player_command_type_t;
+    commandNext, commandTogglePause, commandToggleMaxFps
+} playerCommandType;
 
-esp_err_t player_init(void);
-bool player_send(player_command_type_t command);
-void player_run(void);
+esp_err_t playerInit(void);
+bool playerSend(playerCommandType command);
+void playerRun(void);

@@ -3,19 +3,19 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 820
-#define PANEL_BYTES (SCREEN_WIDTH * SCREEN_HEIGHT * 2)
-#define CARD_ROOT "/sdcard/anims"
+#define panelWidth 320
+#define panelHeight 820
+#define panelBytes (panelWidth * panelHeight * 2)
+#define cardRoot "/sdcard/anims"
 
-esp_err_t board_display_init(void);
-void board_present(const uint16_t *pixels);
-uint16_t *board_back_buffer(void);
-void board_setStatus(const char *line1, const char *line2, const char *line3);
-void board_setBrightness(unsigned value);
-void board_infoOverlay(bool enabled, unsigned fps_x100, bool maximum_fps);
-void batteryInit(void);
-bool getBattery(unsigned *millivolts, int *percent);
-void setBatteryGliph(int percent);
-void buttonInit(void);
-bool ifButtonDown(void);
+esp_err_t boardDisplayInit(void);
+void boardPresent(const uint16_t *pixels);
+uint16_t *boardBackBuffer(void);
+void boardStatus(const char *line1, const char *line2, const char *line3);
+void boardBrightness(unsigned value);
+void boardInformationOverlay(bool enabled, unsigned fpsX100, bool maximumFps);
+void boardBatteryInit(void);
+bool boardBatteryRead(unsigned *millivolts, int *percent);
+void boardBatteryIndicator(int percent);
+void boardButtonInit(void);
+bool boardButtonDown(void);

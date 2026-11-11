@@ -1,4 +1,3 @@
-/* English-language firmware for Waveshare/Spotpear ESP32-S3-LCD-3.16. */
 #include "board.h"
 #include "player.h"
 #include "usb_disk.h"
@@ -6,27 +5,27 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static void button_task(void *arg)
+static void buttonTask(void *arg)
 {
     bool previous = false, stable = false;
-    unsigned debounce = 0, pressed_ms = 0, released_ms = 0, clicks = 0;
+    unsigned debounce = 0, pressedMs = 0, releasedMs = 0, clicks = 0;
     for (;;) {
-        bool down = ifButtonDown();
+        bool down = boardButtonDown();
         debounce = down == previous ? debounce + 10 : 0;
         previous = down;
         if (debounce >= 30 && stable != down) {
             stable = down;
-            if (down) pressed_ms = 0;
-            else if (pressed_ms < 750) { ++clicks; released_ms = 0; }
+            if (down) pressedMs = 0;
+            else if (pressedMs < 750) { ++clicks; releasedMs = 0; }
             else clicks = 0;
         }
         if (stable) {
-            if (pressed_ms < 750) pressed_ms += 10;
+            if (pressedMs < 750) pressedMs += 10;
         } else if (clicks) {
-            released_ms += 10;
-            if (released_ms >= 300) {
-                player_send(clicks >= 3 ? MAX_FPS :
-                            clicks == 2 ? PAUSE : NEXT);
+            releasedMs += 10;
+            if (releasedMs >= 300) {
+                playerSend(clicks >= 3 ? commandToggleMaxFps :
+                            clicks == 2 ? commandTogglePause : commandNext);
                 clicks = 0;
             }
         }
@@ -37,11 +36,11 @@ static void button_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI("startup", "starting");
-    ESP_ERROR_CHECK(board_display_init());
+    ESP_ERROR_CHECK(boardDisplayInit());
     ESP_LOGI("startup", "started");
-    buttonInit();
-    ESP_ERROR_CHECK(player_init());
-    ESP_ERROR_CHECK(usb_disk_init());
-    xTaskCreate(button_task, "button", 3072, NULL, 3, NULL);
-    player_run();
+    boardButtonInit();
+    ESP_ERROR_CHECK(playerInit());
+    ESP_ERROR_CHECK(usbDiskInit());
+    xTaskCreate(buttonTask, "button", 3072, NULL, 3, NULL);
+    playerRun();
 }

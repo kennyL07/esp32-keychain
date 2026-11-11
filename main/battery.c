@@ -1,6 +1,3 @@
-/* Waveshare ESP32-S3-LCD-3.16: GPIO4 / ADC1_CH3, 200k + 200k divider.
- * Source: manufacturer's ESP32-S3-LCD-3.16-schematic.pdf, BAT&ADC section.
- * Voltage is an estimate of state of charge, not a fuel gauge/charger signal. */
 #include "board.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
@@ -9,9 +6,9 @@
 
 static adc_oneshot_unit_handle_t adc;
 static adc_cali_handle_t calibration;
-static int filtered_mv;
+static int filteredMv;
 
-void batteryInit(void)
+void boardBatteryInit(void)
 {
     adc_oneshot_unit_init_cfg_t unit = {.unit_id = ADC_UNIT_1};
     esp_err_t err = adc_oneshot_new_unit(&unit, &adc);
@@ -29,7 +26,7 @@ void batteryInit(void)
         ESP_LOGW("battery", "battery voltage not found: %s", esp_err_to_name(err));
 }
 
-bool getBattery(unsigned *millivolts, int *percent)
+bool boardBatteryRead(unsigned *millivolts, int *percent)
 {
     *millivolts = 0;
     *percent = -1;
@@ -48,21 +45,21 @@ bool getBattery(unsigned *millivolts, int *percent)
     *millivolts = measured;
     if (measured < 2800 || measured > 4350)
     {
-        filtered_mv = 0;
+        filteredMv = 0;
         return false;
     }
-    filtered_mv = filtered_mv ? (3 * filtered_mv + measured + 2) / 4 : measured;
-    *millivolts = filtered_mv;
+    filteredMv = filteredMv ? (3 * filteredMv + measured + 2) / 4 : measured;
+    *millivolts = filteredMv;
     static const int levels[][2] = {{3300, 0}, {3500, 5}, {3600, 12}, {3700, 25}, {3800, 45}, {3900, 65}, {4000, 80}, {4100, 90}, {4200, 100}};
     *percent = 100;
-    if (filtered_mv <= levels[0][0])
+    if (filteredMv <= levels[0][0])
         *percent = 0;
     else
         for (unsigned i = 1; i < sizeof(levels) / sizeof(levels[0]); ++i)
         {
-            if (filtered_mv > levels[i][0])
+            if (filteredMv > levels[i][0])
                 continue;
-            *percent = levels[i - 1][1] + (filtered_mv - levels[i - 1][0]) *
+            *percent = levels[i - 1][1] + (filteredMv - levels[i - 1][0]) *
                                               (levels[i][1] - levels[i - 1][1]) / (levels[i][0] - levels[i - 1][0]);
             break;
         }

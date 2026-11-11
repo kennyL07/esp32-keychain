@@ -19,14 +19,14 @@ static void label(uint16_t *fb, unsigned width, unsigned height, const char *tex
     static const uint8_t s[5] = {0x46,0x49,0x49,0x49,0x31};
     static const uint8_t m[5] = {0x7f,0x02,0x0c,0x02,0x7f};
     static const uint8_t a[5] = {0x7e,0x11,0x11,0x11,0x7e};
-    static const uint8_t glyph_x[5] = {0x63,0x14,0x08,0x14,0x63};
+    static const uint8_t glyphX[5] = {0x63,0x14,0x08,0x14,0x63};
     static const uint8_t percent[5] = {0x63,0x13,0x08,0x64,0x63};
     static const uint8_t dot[5] = {0x00,0x60,0x60,0x00,0x00};
     static const uint8_t unknown[5] = {0x02,0x01,0x51,0x09,0x06};
     for (int i = 0; text[i]; ++i) {
         char c = text[i];
         const uint8_t *glyph = c >= '0' && c <= '9' ? digits[c - '0'] :
-            c == 'F' ? f : c == 'P' ? p : c == 'S' ? s : c == 'M' ? m : c == 'A' ? a : c == 'X' ? glyph_x :
+            c == 'F' ? f : c == 'P' ? p : c == 'S' ? s : c == 'M' ? m : c == 'A' ? a : c == 'X' ? glyphX :
             c == '%' ? percent : c == '.' ? dot : c == '?' ? unknown : 0;
         if (!glyph) continue;
         for (int col = 0; col < 5; ++col) for (int row = 0; row < 7; ++row)
@@ -35,12 +35,12 @@ static void label(uint16_t *fb, unsigned width, unsigned height, const char *tex
     }
 }
 
-void status_footer_draw(uint16_t *fb, unsigned width, unsigned height, const status_footer_t *status)
+void statusFooterDraw(uint16_t *fb, unsigned width, unsigned height, const statusFooter *status)
 {
-    if (!fb || !status || !status->enabled || width < 320 || height < STATUS_FOOTER_HEIGHT) return;
-    int top = height - STATUS_FOOTER_HEIGHT;
+    if (!fb || !status || !status->enabled || width < 320 || height < statusFooterHeight) return;
+    int top = height - statusFooterHeight;
     for (unsigned y = top; y < height; ++y) for (unsigned x = 0; x < width; ++x) fb[y * width + x] = 0;
-    unsigned tenths = status->fps_x100 > 9990 ? 999 : (status->fps_x100 + 5) / 10;
+    unsigned tenths = status->fpsX100 > 9990 ? 999 : (status->fpsX100 + 5) / 10;
     char fps[10];
     int n = 0;
     if (tenths >= 100) fps[n++] = '0' + tenths / 100;
@@ -48,8 +48,8 @@ void status_footer_draw(uint16_t *fb, unsigned width, unsigned height, const sta
     fps[n++] = '.'; fps[n++] = '0' + tenths % 10;
     fps[n++] = ' '; fps[n++] = 'F'; fps[n++] = 'P'; fps[n++] = 'S'; fps[n] = 0;
     label(fb, width, height, fps, 16, top + 6, 0xffff);
-    if (status->max_fps) label(fb, width, height, "MAX", 136, top + 6, 0x07ff);
-    int percent = status->battery_percent > 100 ? 100 : status->battery_percent;
+    if (status->maxFps) label(fb, width, height, "MAX", 136, top + 6, 0x07ff);
+    int percent = status->batteryPercent > 100 ? 100 : status->batteryPercent;
     uint16_t color = percent < 0 ? 0xbdf7 : percent <= 15 ? 0xf800 : 0x07e0;
     for (int y = 5; y < 21; ++y) for (int x = 214; x < 244; ++x)
         if (y < 7 || y > 18 || x < 216 || x > 241 ||

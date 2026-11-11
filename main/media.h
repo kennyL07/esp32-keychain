@@ -2,9 +2,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef enum { UNKNOWN_FILE, IMAGE_FILE, VIDEO_FILE, MEDIA_EPV } mediaType;
-mediaType getMediaType(const char *path);
-const char *media_show_image(const char *path);
+typedef enum { mediaUnknown, mediaImage, mediaVideo, mediaEpv } mediaKind;
+mediaKind mediaKindForPath(const char *path);
+const char *mediaShowImage(const char *path);
 
-typedef bool (*media_video_present_t)(uint32_t pts_ms, unsigned fps, void *context);
-const char *media_play_video(const char *path, media_video_present_t present, void *context);
+typedef bool (*mediaVideoPresent)(uint32_t ptsMs, unsigned fps, void *context);
+const char *mediaPlayVideo(const char *path, mediaVideoPresent present, void *context);

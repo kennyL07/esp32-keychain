@@ -1,4 +1,3 @@
-"""Merge a completed ESP-IDF build into one image for flashing at address zero."""
 import hashlib
 import json
 from pathlib import Path
