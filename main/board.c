@@ -243,3 +243,10 @@ void boardStatus(const char *a, const char *b, const char *c)
     presentBackBuffer();
 }
 
+void boardButtonInit(void)
+{
+    gpio_config_t config = {.pin_bit_mask = 1ULL, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE};
+    ESP_ERROR_CHECK(gpio_config(&config));
+}
+
+bool boardButtonDown(void) { return gpio_get_level(0) == 0; }

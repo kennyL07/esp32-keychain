@@ -11,12 +11,31 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 #define maxCards 128
 #define maxPath 537
 #define maxJpeg (1024 * 1024)
 static char (*cards)[maxPath];
 static jpeg_dec_handle_t decoder;
+static QueueHandle_t commands;
+static unsigned selectedIndex, count, generation;
+
+bool playerSend(playerCommandType command)
+{
+    return commands && xQueueSend(commands, &command, 0) == pdTRUE;
+}
+
+static void processCommands(void)
+{
+    playerCommandType command;
+    while (xQueueReceive(commands, &command, 0) == pdTRUE) {
+        if (count && command == commandNext) {
+            selectedIndex = (selectedIndex + 1) % count;
+            ++generation;
+        }
+    }
+}
 static uint8_t *jpegBuffer, *pixelBuffer;
 
 static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
@@ -30,7 +49,8 @@ esp_err_t playerInit(void)
     cards = heap_caps_calloc(maxCards, sizeof(*cards), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     jpegBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     pixelBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!cards || !jpegBuffer || !pixelBuffer) return ESP_ERR_NO_MEM;
+    commands = xQueueCreate(16, sizeof(playerCommandType));
+    if (!commands || !cards || !jpegBuffer || !pixelBuffer) return ESP_ERR_NO_MEM;
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
     return jpeg_dec_open(&config, &decoder) == JPEG_ERR_OK ? ESP_OK : ESP_FAIL;
@@ -61,7 +81,7 @@ static unsigned scanCards(void)
     return count;
 }
 
-static int playStream(const char *path)
+static int playStream(const char *path, unsigned selectedGeneration)
 {
     FILE *file = fopen(path, "rb");
     if (!file) return -1;
@@ -73,6 +93,8 @@ static int playStream(const char *path)
     uint32_t frames = le32(header + 12);
     unsigned delayMs = 1000 * le16(header + 10) / le16(header + 8);
     for (uint32_t i = 0; i < frames; ++i) {
+        processCommands();
+        if (generation != selectedGeneration) { fclose(file); return 1; }
         uint8_t length[4];
         if (fread(length, 1, sizeof(length), file) != sizeof(length)) goto invalid;
         uint32_t size = le32(length);
@@ -104,16 +126,22 @@ void playerRun(void)
         boardStatus("SD CARD ERROR", usbDiskError(), "");
         return;
     }
-    unsigned count = scanCards();
+    count = scanCards();
     ESP_LOGI("player", "catalog has %u entries", count);
     if (!count) {
         boardStatus("NO MEDIA", "", "");
         return;
     }
     char path[maxPath + 24];
-    snprintf(path, sizeof(path), "%s/loop.epv", cards[0]);
-    ESP_LOGI("player", "trying %s", path);
-    while (playStream(path) == 0) {
+    for (;;) {
+        unsigned selectedGeneration = generation;
+        snprintf(path, sizeof(path), "%s/loop.epv", cards[selectedIndex]);
+        if (playStream(path, selectedGeneration) < 0) {
+            boardStatus("MEDIA ERROR", "", "");
+            while (generation == selectedGeneration) {
+                processCommands();
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+        }
     }
-    boardStatus("MEDIA ERROR", "", "");
 }
