@@ -1,11 +1,14 @@
 #include "media.h"
 #include "board.h"
+#include "usb_disk.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_extractor.h"
+#include "esp_mp4_extractor.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -28,6 +31,7 @@ mediaKind mediaKindForPath(const char *path)
 {
     const char *ext = strrchr(path, '.');
     if (!ext) return mediaUnknown;
+    if (!strcasecmp(ext, ".mp4")) return mediaVideo;
     if (!strcasecmp(ext, ".png") || !strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg"))
         return mediaImage;
     return mediaUnknown;
@@ -96,3 +100,52 @@ const char *mediaShowImage(const char *path)
     return error;
 }
 
+typedef struct { FILE *file; uint32_t size; } mp4Input;
+static int mp4Read(void *data, uint32_t len, void *ctx)
+{
+    FILE *file = ((mp4Input *)ctx)->file;
+    if (usbDiskRequested()) return -1;
+    size_t n = fread(data, 1, len, file);
+    return ferror(file) ? -1 : (int)n;
+}
+static int mp4Seek(uint32_t offset, void *ctx)
+{
+    mp4Input *input = ctx;
+    return offset <= input->size ? fseek(input->file, offset, SEEK_SET) : -1;
+}
+static uint32_t mp4Size(void *ctx) { return ((mp4Input *)ctx)->size; }
+
+const char *mediaPlayVideo(const char *path, mediaVideoPresent present, void *context)
+{
+    struct stat info;
+    if (stat(path, &info) != 0 || info.st_size <= 0 || info.st_size > INT32_MAX)
+        return "MP4 is unreadable";
+    mp4Input input = {.file = fopen(path, "rb"), .size = info.st_size};
+    if (!input.file) return "Could not open MP4.";
+    static bool registered;
+    const char *error = "MP4 OPEN FAILED";
+    if (!registered) registered = esp_mp4_extractor_register() == ESP_EXTRACTOR_ERR_OK;
+    esp_extractor_handle_t extractor = NULL;
+    esp_extractor_config_t config = {
+        .type = ESP_EXTRACTOR_TYPE_MP4, .extract_mask = ESP_EXTRACT_MASK_VIDEO,
+        .in_read_cb = mp4Read, .in_seek_cb = mp4Seek, .in_size_cb = mp4Size, .in_ctx = &input,
+        .out_pool_size = maxSample + 64, .out_align = 16,
+    };
+    if (!registered || esp_extractor_open(&config, &extractor) != ESP_EXTRACTOR_ERR_OK) goto done;
+    setvbuf(input.file, NULL, _IOFBF, 16384);
+    bool dynamic = true;
+    esp_extractor_ctrl(extractor, ESP_EXTRACTOR_CTRL_TYPE_SET_DYNAMIC_INDEXING, &dynamic, sizeof(dynamic));
+    esp_extractor_stream_info_t stream;
+    error = "MP4 HEADER ERROR";
+    if (esp_extractor_parse_stream(extractor) != ESP_EXTRACTOR_ERR_OK ||
+        esp_extractor_get_stream_info(extractor, ESP_EXTRACTOR_STREAM_TYPE_VIDEO, 0, &stream) != ESP_EXTRACTOR_ERR_OK)
+        goto done;
+    ESP_LOGI("media", "probe %s: %ux%u @ %u", path, (unsigned)stream.video_info.width,
+             (unsigned)stream.video_info.height, (unsigned)stream.video_info.fps);
+
+    error = "MP4 PROBE ONLY";
+done:
+    if (extractor) esp_extractor_close(extractor);
+    fclose(input.file);
+    return error;
+}

@@ -366,6 +366,39 @@ invalid:
     return -1;
 }
 
+typedef struct {
+    unsigned generation, frames;
+    uint32_t firstPts;
+    int64_t due, started, firstPaused;
+} videoClock;
+
+static bool videoFrame(uint32_t pts, unsigned fps, void *context)
+{
+    videoClock *clock = context;
+    processCommands();
+    if (generation != clock->generation) return false;
+    int64_t now = esp_timer_get_time();
+    if (!clock->frames) {
+        clock->firstPts = pts;
+        clock->started = now;
+        clock->firstPaused = pausedTime;
+        clock->due = now;
+    } else {
+        int64_t due = state.maxFpsEnabled ? now :
+            clock->due + (pts >= clock->firstPts ? (int64_t)(pts - clock->firstPts) * 1000 : 0);
+        int64_t priorPause = pausedTime;
+        if (!waitForFrame(&due, clock->generation)) return false;
+        clock->due += pausedTime - priorPause;
+        now = esp_timer_get_time();
+    }
+    int64_t elapsed = now - clock->started - (pausedTime - clock->firstPaused);
+    if (clock->frames && elapsed > 0)
+        state.playbackFpsX100 = clock->frames * 100000000ULL / elapsed;
+    state.sourceFpsX100 = fps * 100;
+    ++clock->frames;
+    return true;
+}
+
 static void waitUntilChanged(unsigned selectedGeneration)
 {
     while (generation == selectedGeneration) {
@@ -417,14 +450,32 @@ void playerRun(void)
         }
         if (!count) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
         unsigned selected = state.cardIndex, selectedGeneration = generation;
-        if (mediaKindForPath(cards[selected]) == mediaImage &&
-            strncmp(cards[selected], cardRoot "/", sizeof(cardRoot))) {
-            state.playbackFpsX100 = state.sourceFpsX100 = 0;
-            const char *error = mediaShowImage(cards[selected]);
-            if (error) boardStatus("MEDIA ERROR", "", "");
-            waitUntilChanged(selectedGeneration);
+        mediaKind kind = !strncmp(cards[selected], cardRoot "/", sizeof(cardRoot)) ?
+            mediaEpv : mediaKindForPath(cards[selected]);
+        state.playbackFpsX100 = state.sourceFpsX100 = 0;
+        setError("");
+        if (kind != mediaEpv) {
+            const char *error = NULL;
+            do {
+                ESP_LOGI(tag, "opening %s", cards[selected]);
+                if (kind == mediaImage) {
+                    error = mediaShowImage(cards[selected]);
+                } else {
+                    videoClock clock = {.generation = selectedGeneration};
+                    error = mediaPlayVideo(cards[selected], videoFrame, &clock);
+                }
+                processCommands();
+            } while (kind == mediaVideo && !error && generation == selectedGeneration);
+            if (generation == selectedGeneration) {
+                if (error) {
+                    setError(error);
+                    boardStatus("MEDIA ERROR", kind == mediaVideo ? error : "", "");
+                }
+                waitUntilChanged(selectedGeneration);
+            }
             continue;
         }
+
         jpegBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         pixelBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!jpegBuffer || !pixelBuffer) {

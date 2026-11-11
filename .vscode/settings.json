@@ -1,5 +1,17 @@
 {
-    "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf",
     "idf.port": "COM3",
-    "idf.flashType": "UART"
+    "idf.flashType": "UART",
+    "idf.customExtraVars": {
+        "IDF_PATH": "C:\\Users\\kenny\\Documents\\esp32-keychain\\.tools\\esp-idf",
+        "IDF_TOOLS_PATH": "C:\\Espressif",
+        "IDF_PYTHON_ENV_PATH": "C:\\Espressif\\tools\\python\\v6.1\\venv"
+    },
+    "clangd.path": "C:\\Espressif\\tools\\esp-clangd\\esp-21.1.3_20260408\\esp-clangd\\bin\\clangd.exe",
+    "clangd.arguments": [
+        "--background-index",
+        "--query-driver=**",
+        "--compile-commands-dir=c:\\Users\\kenny\\Documents\\esp32-keychain/.tools/vscode-build"
+    ],
+    "idf.buildPath": "${workspaceFolder}/.tools/vscode-build",
+    "idf.currentSetup": "C:\\Users\\kenny\\Documents\\esp32-keychain\\.tools\\esp-idf"
 }

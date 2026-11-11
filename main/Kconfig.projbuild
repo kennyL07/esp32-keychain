@@ -1,6 +1,6 @@
-menu "keychain"
+menu "Keychain player"
     config KEYCHAIN_BENCHMARK_FRAMES
-        int "debug"
+        int "Startup diagnostic frames without playback pacing (0 disables)"
         range 0 300
         default 0
 endmenu
