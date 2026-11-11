@@ -80,7 +80,8 @@ const char *mediaShowImage(const char *path)
                     uint16_t *dst = pixels + (fit.y + y) * panelWidth + fit.x;
                     for (unsigned x = 0; x < fit.width; ++x) {
                         const uint8_t *p = src + 4 * fit.srcX[x];
-                        dst[x] = rgb565(p[0], p[1], p[2]);
+                        unsigned a = p[3];
+                        dst[x] = rgb565(p[0] * a / 255, p[1] * a / 255, p[2] * a / 255);
                     }
                 }
                 stbi_image_free(rgba);

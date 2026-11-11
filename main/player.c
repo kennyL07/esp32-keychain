@@ -1,5 +1,6 @@
 #include "player.h"
 #include "board.h"
+#include "media.h"
 #include "usb_disk.h"
 #include <dirent.h>
 #include <stdio.h>
@@ -134,26 +135,36 @@ esp_err_t playerInit(void)
 
 static int compareCards(const void *a, const void *b) { return strcmp(a, b); }
 
-static unsigned scanCards(void)
+static unsigned scanDirectory(const char *root, unsigned count, bool legacy)
 {
-    unsigned count = 0;
-    DIR *dir = opendir(cardRoot);
+    DIR *dir = opendir(root);
     if (!dir) return count;
     struct dirent *entry;
     while (!usbDiskRequested() && count < maxCards && (entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
+        if (entry->d_name[0] == '.' || (!legacy && mediaKindForPath(entry->d_name) == mediaUnknown)) continue;
         char path[maxPath + 16];
-        int n = snprintf(path, sizeof(path), "%s/%s/loop.epv", cardRoot, entry->d_name);
+        int n = snprintf(path, sizeof(path), "%s/%s%s", root, entry->d_name, legacy ? "/loop.epv" : "");
         if (n < 0 || n >= maxPath) continue;
         struct stat info;
         if (stat(path, &info) != 0 || !S_ISREG(info.st_mode)) continue;
-        n -= sizeof("/loop.epv") - 1;
+        if (legacy) n -= sizeof("/loop.epv") - 1;
         memcpy(cards[count], path, n);
         cards[count][n] = 0;
         ++count;
     }
     closedir(dir);
+    return count;
+}
+
+static unsigned scanCards(void)
+{
+    unsigned count = scanDirectory("/sdcard", 0, false);
+    count = scanDirectory("/sdcard/media", count, false);
     qsort(cards, count, sizeof(*cards), compareCards);
+    unsigned firstLegacy = count;
+    count = scanDirectory(cardRoot, count, true);
+    qsort(cards + firstLegacy, count - firstLegacy, sizeof(*cards), compareCards);
+    ESP_LOGI(tag, "%u files", count);
     return count;
 }
 
@@ -245,7 +256,6 @@ failed:
     return false;
 }
 
-// yeah i don't think I could've coded this. wtf is this. ashamed to have v*bed c*ded this
 static int playStream(const char *path, unsigned expectedGeneration)
 {
     FILE *file = fopen(path, "rb");
@@ -407,6 +417,14 @@ void playerRun(void)
         }
         if (!count) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
         unsigned selected = state.cardIndex, selectedGeneration = generation;
+        if (mediaKindForPath(cards[selected]) == mediaImage &&
+            strncmp(cards[selected], cardRoot "/", sizeof(cardRoot))) {
+            state.playbackFpsX100 = state.sourceFpsX100 = 0;
+            const char *error = mediaShowImage(cards[selected]);
+            if (error) boardStatus("MEDIA ERROR", "", "");
+            waitUntilChanged(selectedGeneration);
+            continue;
+        }
         jpegBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         pixelBuffer = heap_caps_aligned_alloc(16, maxJpeg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!jpegBuffer || !pixelBuffer) {
