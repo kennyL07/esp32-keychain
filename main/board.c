@@ -11,9 +11,15 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static esp_lcd_panel_handle_t panel;
-static uint16_t *framebuffer;
+static uint16_t *framebuffers[2];
+static unsigned backBuffer = 1;
+static SemaphoreHandle_t frameDone;
+static portMUX_TYPE flipLock = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool flipPending;
+static int displayCore;
 
 static const st7701_lcd_init_cmd_t initCommands[] = {
     {0xFF, (uint8_t[]){0x77, 0x01, 0x00, 0x00, 0x13}, 5, 0},
@@ -63,6 +69,20 @@ static const st7701_lcd_init_cmd_t initCommands[] = {
     {0x35, (uint8_t[]){0x00}, 1, 0},
     {0x29, NULL, 0, 20}};
 
+static bool onFrameComplete(esp_lcd_panel_handle_t unused,
+                              const esp_lcd_rgb_panel_event_data_t *event, void *ctx)
+{
+    BaseType_t woken = pdFALSE;
+    portENTER_CRITICAL_ISR(&flipLock);
+    if (flipPending)
+    {
+        flipPending = false;
+        xSemaphoreGiveFromISR(frameDone, &woken);
+    }
+    portEXIT_CRITICAL_ISR(&flipLock);
+    return woken == pdTRUE;
+}
+
 void boardBrightness(unsigned value)
 {
     if (value > 255)
@@ -74,6 +94,7 @@ void boardBrightness(unsigned value)
 
 esp_err_t boardDisplayInit(void)
 {
+    displayCore = xPortGetCoreID();
     ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE, .timer_num = LEDC_TIMER_0, .duty_resolution = LEDC_TIMER_8_BIT, .freq_hz = 20000, .clk_cfg = LEDC_AUTO_CLK};
     ledc_channel_config_t light = {
@@ -96,7 +117,7 @@ esp_err_t boardDisplayInit(void)
     rgb.bits_per_pixel = 16;
     rgb.psram_trans_align = 64;
 #endif
-    rgb.num_fbs = 1;
+    rgb.num_fbs = 2;
     rgb.bounce_buffer_size_px = panelWidth * 10;
     rgb.flags.fb_in_psram = 1;
     rgb.hsync_gpio_num = 38;
@@ -117,16 +138,58 @@ esp_err_t boardDisplayInit(void)
     esp_lcd_panel_dev_config_t config = {
         .reset_gpio_num = 16, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16, .vendor_config = &vendor};
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7701(handle, &config, &panel));
+    frameDone = xSemaphoreCreateBinary();
+    if (!frameDone)
+        return ESP_ERR_NO_MEM;
+    esp_lcd_rgb_panel_event_callbacks_t callbacks = {.on_frame_buf_complete = onFrameComplete};
+    ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(panel, &callbacks, NULL));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
-    ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panel, 1, (void **)&framebuffer));
-    memset(framebuffer, 0, panelBytes);
+    ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panel, 2,
+                                                       (void **)&framebuffers[0], (void **)&framebuffers[1]));
+    memset(framebuffers[0], 0, panelBytes);
+    memset(framebuffers[1], 0, panelBytes);
     return ESP_OK;
 }
 
-uint16_t *boardBackBuffer(void) { return framebuffer; }
+static void waitForBackBuffer(void)
+{
+    configASSERT(xPortGetCoreID() == displayCore);
+    while (flipPending)
+    {
+        if (xSemaphoreTake(frameDone, pdMS_TO_TICKS(250)) != pdTRUE && flipPending)
+        {
+            ESP_LOGE("board", "timed out");
+        }
+    }
+}
+
+uint16_t *boardBackBuffer(void)
+{
+    waitForBackBuffer();
+    return framebuffers[backBuffer];
+}
+
+static void presentBackBuffer(void)
+{
+    while (xSemaphoreTake(frameDone, 0) == pdTRUE)
+    {
+    }
+    portENTER_CRITICAL(&flipLock);
+    flipPending = true;
+    esp_err_t err = esp_lcd_panel_draw_bitmap(panel, 0, 0, panelWidth, panelHeight,
+                                              framebuffers[backBuffer]);
+    if (err != ESP_OK)
+        flipPending = false;
+    portEXIT_CRITICAL(&flipLock);
+    ESP_ERROR_CHECK(err);
+    backBuffer ^= 1;
+}
 
 void boardPresent(const uint16_t *pixels)
 {
-    if (pixels != framebuffer) memcpy(framebuffer, pixels, panelBytes);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, 0, panelWidth, panelHeight, framebuffer));
+    waitForBackBuffer();
+    if (pixels != framebuffers[backBuffer])
+        memcpy(framebuffers[backBuffer], pixels, panelBytes);
+    presentBackBuffer();
 }
+
