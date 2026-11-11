@@ -51,7 +51,6 @@ static void save_max_fps(void)
         if (err == ESP_OK) err = nvs_commit(handle);
         nvs_close(handle);
     }
-    if (err != ESP_OK) ESP_LOGE(TAG, "Could not save maximum FPS mode: %s", esp_err_to_name(err));
 }
 
 static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
@@ -81,8 +80,8 @@ static void process_commands(void)
         battery_due = esp_timer_get_time() + 10000000;
         unsigned mv;
         int percent;
-        bool valid = board_battery_read(&mv, &percent);
-        board_battery_indicator(valid ? percent : -1);
+        bool valid = getBattery(&mv, &percent);
+        setBatteryGliph(valid ? percent : -1);
     }
     player_command_type_t command;
     while (xQueueReceive(commands, &command, 0) == pdTRUE) {
@@ -107,7 +106,7 @@ static void process_commands(void)
     }
     unsigned fps = !state.paused && !handoff && state.card_count && !state.has_error
         ? state.playback_fps_x100 : 0;
-    board_information_overlay(state.info_overlay_enabled, fps, state.max_fps_enabled);
+    board_infoOverlay(state.info_overlay_enabled, fps, state.max_fps_enabled);
 }
 
 esp_err_t player_init(void)
@@ -123,10 +122,10 @@ esp_err_t player_init(void)
             nvs_close(settings);
         }
     }
-    board_information_overlay(state.info_overlay_enabled, 0, state.max_fps_enabled);
-    board_brightness(state.brightness);
+    board_infoOverlay(state.info_overlay_enabled, 0, state.max_fps_enabled);
+    board_setBrightness(state.brightness);
     commands = xQueueCreate(16, sizeof(player_command_type_t));
-    board_battery_init();
+    batteryInit();
     cards = heap_caps_calloc(MAX_CARDS, sizeof(*cards), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!commands || !cards) return ESP_ERR_NO_MEM;
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
@@ -142,7 +141,7 @@ static unsigned scan_directory(const char *root, unsigned count, bool legacy)
     if (!dir) return count;
     struct dirent *entry;
     while (!usb_disk_requested() && count < MAX_CARDS && (entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.' || (!legacy && media_kind(entry->d_name) == MEDIA_UNKNOWN)) continue;
+        if (entry->d_name[0] == '.' || (!legacy && getMediaType(entry->d_name) == UNKNOWN_FILE)) continue;
         char path[MAX_PATH + 16];
         int n = snprintf(path, sizeof(path), "%s/%s%s", root, entry->d_name, legacy ? "/loop.epv" : "");
         if (n < 0 || n >= MAX_PATH) continue;
@@ -165,7 +164,7 @@ static unsigned scan_cards(void)
     unsigned first_legacy = count;
     count = scan_directory(CARD_ROOT, count, true);
     qsort(cards + first_legacy, count - first_legacy, sizeof(*cards), compare_cards);
-    ESP_LOGI(TAG, "Found %u media files", count);
+    ESP_LOGI(TAG, "%u files", count);
     return count;
 }
 
@@ -199,8 +198,6 @@ typedef struct {
     bool started;
 } frame_reader_t;
 
-/* Only this worker touches the playback FILE while prefetching. The player joins
- * it before closing the FILE or acknowledging an upload/storage mutation. */
 static void frame_reader_task(void *arg)
 {
     frame_reader_t *r = arg;
@@ -256,7 +253,6 @@ static bool frame_reader_start(frame_reader_t *r, FILE *file, uint32_t frames, u
     return true;
 failed:
     frame_reader_stop(r);
-    ESP_LOGW(TAG, "SD prefetch unavailable; using sequential reads");
     return false;
 }
 
@@ -269,8 +265,8 @@ static int play_stream(const char *path, unsigned expected_generation)
     setvbuf(file, NULL, _IOFBF, 32 * 1024);
     uint8_t header[24];
     if (fread(header, 1, sizeof(header), file) != sizeof(header) ||
-        memcmp(header, "EPV1", 4) || le16(header + 4) != PANEL_WIDTH ||
-        le16(header + 6) != PANEL_HEIGHT || !le16(header + 8) || !le16(header + 10) ||
+        memcmp(header, "EPV1", 4) || le16(header + 4) != SCREEN_WIDTH ||
+        le16(header + 6) != SCREEN_HEIGHT || !le16(header + 8) || !le16(header + 10) ||
         le16(header + 8) > 30 || le16(header + 10) > 1000 || !le32(header + 12) ||
         le32(header + 12) > 216000 || le32(header + 16) > MAX_JPEG || le32(header + 20)) {
         fclose(file);
@@ -287,7 +283,6 @@ static int play_stream(const char *path, unsigned expected_generation)
     unsigned skipped = 0;
     unsigned displayed = 0;
     int64_t read_total = 0, decode_total = 0, present_total = 0, read_wait_total = 0;
-    ESP_LOGI(TAG, "Playing %s (%lu frames)%s", path, (unsigned long)frames, benchmark_remaining ? " [throughput test]" : "");
     for (uint32_t i = 0; i < frames; ++i) {
         bool fast = state.max_fps_enabled || benchmark_remaining > 0;
         if (fast) due = esp_timer_get_time();
@@ -326,7 +321,7 @@ static int play_stream(const char *path, unsigned expected_generation)
             jpeg_dec_header_info_t info = {0};
             int output_size = 0;
             if (jpeg_dec_parse_header(decoder, &io, &info) != JPEG_ERR_OK ||
-                info.width != PANEL_WIDTH || info.height != PANEL_HEIGHT ||
+                info.width != SCREEN_WIDTH || info.height != SCREEN_HEIGHT ||
                 jpeg_dec_get_outbuf_len(decoder, &output_size) != JPEG_ERR_OK ||
                 output_size > MAX_JPEG || output_size < PANEL_BYTES) goto invalid;
             /* Decode straight into the inactive LCD buffer when no padding is required. */
@@ -350,10 +345,6 @@ static int play_stream(const char *path, unsigned expected_generation)
             int64_t active = first_presented ? now-first_presented-(paused_time-first_paused) : 0;
             state.playback_fps_x100 = active > 0 && displayed > 1 ? (unsigned)((displayed-1)*100000000ULL/active) : 0;
             state.source_fps_x100 = le16(header+8)*100/le16(header+10);
-            if (frames > 100) ESP_LOGI(TAG, "Playback %u.%02u/%u.%02u FPS; SD=%luus JPEG=%luus display=%luus; %u dropped",
-                state.playback_fps_x100/100,state.playback_fps_x100%100,state.source_fps_x100/100,state.source_fps_x100%100,
-                (unsigned long)(read_total/(displayed?displayed:1)),(unsigned long)(decode_total/(displayed?displayed:1)),
-                (unsigned long)(present_total/(displayed?displayed:1)),skipped);
             last_report = now;
         }
         /* Maximum mode avoids a mandatory delay on every frame. Give idle a
@@ -366,10 +357,6 @@ static int play_stream(const char *path, unsigned expected_generation)
     if (!wait_for_frame(&due, expected_generation)) goto changed;
     frame_reader_stop(&reader);
     fclose(file);
-    if (displayed) ESP_LOGI(TAG, "Frame work avg: SD=%luus wait=%luus JPEG=%luus display=%luus; %u shown, %u skipped; measured %u.%02u FPS",
-        (unsigned long)(read_total/displayed),(unsigned long)(read_wait_total/displayed), (unsigned long)(decode_total/displayed),
-        (unsigned long)(present_total/displayed), displayed, skipped,state.playback_fps_x100/100,state.playback_fps_x100%100);
-    if (skipped) ESP_LOGW(TAG, "Skipped %u late frames", skipped);
     return 0;
 changed:
     frame_reader_stop(&reader);
@@ -436,7 +423,7 @@ void player_run(void)
                 state.card_count = 0;
                 state.playback_fps_x100 = state.source_fps_x100 = 0;
                 set_error("");
-                board_status("USB DRIVE", "COPY MEDIA FILES", "EJECT TO PLAY");
+                board_setStatus("UPLOAD", "", "");
                 showed_usb = true;
             }
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -446,8 +433,7 @@ void player_run(void)
         showed_usb = false;
         if (!usb_disk_local()) {
             if (!showed_error) {
-                set_error("SD card mount failed. Insert a FAT32 card and restart.");
-                board_status("SD CARD ERROR", "INSERT FAT32 CARD", "THEN RESTART");
+                board_setStatus("SD CARD ERROR", getCardError(), "");
                 showed_error = true;
             }
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -462,30 +448,30 @@ void player_run(void)
             state.card_index = 0;
             state.paused = false;
             skip_intro = false;
-            if (!count) board_status("NO MEDIA", "COPY MP4 PNG JPG", "TO THE SD CARD");
+            if (!count) board_setStatus("NO MEDIA", "", "");
         }
         if (!count) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
         unsigned selected = state.card_index, selected_generation = generation;
-        media_kind_t kind = !strncmp(cards[selected], CARD_ROOT "/", sizeof(CARD_ROOT)) ?
-            MEDIA_EPV : media_kind(cards[selected]);
+        mediaType kind = !strncmp(cards[selected], CARD_ROOT "/", sizeof(CARD_ROOT)) ?
+            MEDIA_EPV : getMediaType(cards[selected]);
         state.playback_fps_x100 = state.source_fps_x100 = 0;
         set_error("");
         if (kind != MEDIA_EPV) {
             const char *error = NULL;
             do {
-                ESP_LOGI(TAG, "Opening %s", cards[selected]);
-                if (kind == MEDIA_IMAGE) {
+                ESP_LOGI(TAG, "opening %s", cards[selected]);
+                if (kind == IMAGE_FILE) {
                     error = media_show_image(cards[selected]);
                 } else {
                     video_clock_t clock = {.generation = selected_generation};
                     error = media_play_video(cards[selected], video_frame, &clock);
                 }
                 process_commands();
-            } while (kind == MEDIA_VIDEO && !error && generation == selected_generation);
+            } while (kind == VIDEO_FILE && !error && generation == selected_generation);
             if (generation == selected_generation) {
                 if (error) {
                     set_error(error);
-                    board_status("MEDIA ERROR", kind == MEDIA_VIDEO ? "CHECK MP4 FORMAT" : "CHECK IMAGE SIZE", "SELECT ANOTHER FILE");
+                    board_setStatus("MEDIA ERROR", kind == VIDEO_FILE ? error : "", "");
                 }
                 wait_until_changed(selected_generation);
             }
@@ -497,8 +483,7 @@ void player_run(void)
         if (!jpeg_buffer || !pixel_buffer) {
             free(jpeg_buffer);
             free(pixel_buffer);
-            set_error("Not enough memory for legacy EPV playback.");
-            board_status("MEDIA ERROR", "LEGACY EPV", "SELECT ANOTHER FILE");
+            board_setStatus("MEDIA ERROR", "", "");
             wait_until_changed(selected_generation);
             continue;
         }
@@ -517,14 +502,12 @@ void player_run(void)
         skip_intro = false;
         if (play_intro && stat(path, &info) == 0) {
             int result = play_stream(path, selected_generation);
-            if (result < 0) ESP_LOGW(TAG, "Skipping invalid optional intro.");
         }
         snprintf(path, sizeof(path), "%s/loop%s.epv", cards[selected], clean ? "-clean" : "");
         while (generation == selected_generation) {
             int result = play_stream(path, selected_generation);
             if (result > 0) break;
             if (result < 0) {
-                board_status("PLAYBACK ERROR", "LEGACY EPV", "SELECT ANOTHER FILE");
                 wait_until_changed(selected_generation);
             }
         }
