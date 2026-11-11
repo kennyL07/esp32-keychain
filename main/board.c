@@ -300,11 +300,3 @@ void boardButtonInit(void)
 }
 
 bool boardButtonDown(void) { return gpio_get_level(0) == 0; }
-
-void boardBatteryInit(void) {}
-bool boardBatteryRead(unsigned *millivolts, int *percent)
-{
-    *millivolts = 3850;
-    *percent = 50;
-    return true;
-}
