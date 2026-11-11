@@ -35,7 +35,7 @@ static void buttonTask(void *arg)
 void app_main(void)
 {
     ESP_ERROR_CHECK(boardDisplayInit());
-    boardBrightness(180);
+    boardBrightness(90);
 
     boardButtonInit();
     ESP_ERROR_CHECK(playerInit());

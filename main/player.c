@@ -32,6 +32,7 @@ static struct {
     unsigned cardIndex, cardCount, brightness, playbackFpsX100, sourceFpsX100;
     bool paused, overlayEnabled, infoOverlayEnabled, maxFpsEnabled, hasError;
 } state = {.brightness = 180, .overlayEnabled = true, .infoOverlayEnabled = true};
+static int64_t batteryDue;
 static unsigned generation;
 static bool skipIntro;
 static jpeg_dec_handle_t decoder;
@@ -69,6 +70,13 @@ bool playerSend(playerCommandType command)
 
 static void processCommands(void)
 {
+    if (esp_timer_get_time() >= batteryDue) {
+        batteryDue = esp_timer_get_time() + 10000000;
+        unsigned mv;
+        int percent;
+        bool valid = boardBatteryRead(&mv, &percent);
+        boardBatteryIndicator(valid ? percent : -1);
+    }
     playerCommandType command;
     while (xQueueReceive(commands, &command, 0) == pdTRUE) {
         if (!state.cardCount) continue;
@@ -90,6 +98,9 @@ static void processCommands(void)
             break;
         }
     }
+    unsigned fps = !state.paused && state.cardCount && !state.hasError
+        ? state.playbackFpsX100 : 0;
+    boardInformationOverlay(state.infoOverlayEnabled, fps, state.maxFpsEnabled);
 }
 
 esp_err_t playerInit(void)
@@ -105,8 +116,10 @@ esp_err_t playerInit(void)
             nvs_close(settings);
         }
     }
+    boardInformationOverlay(state.infoOverlayEnabled, 0, state.maxFpsEnabled);
     boardBrightness(state.brightness);
     commands = xQueueCreate(16, sizeof(playerCommandType));
+    boardBatteryInit();
     cards = heap_caps_calloc(maxCards, sizeof(*cards), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!commands || !cards) return ESP_ERR_NO_MEM;
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
@@ -227,6 +240,7 @@ failed:
     return false;
 }
 
+// yeah i don't think I could've coded this. wtf is this. ashamed to have v*bed c*ded this
 static int playStream(const char *path, unsigned expectedGeneration)
 {
     FILE *file = fopen(path, "rb");

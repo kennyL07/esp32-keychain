@@ -1,4 +1,5 @@
 #include "board.h"
+#include "status_footer.h"
 #include <stdio.h>
 #include <string.h>
 #include "driver/gpio.h"
@@ -20,6 +21,13 @@ static SemaphoreHandle_t frameDone;
 static portMUX_TYPE flipLock = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool flipPending;
 static int displayCore;
+static int batteryPercent = -1;
+static bool informationEnabled = true;
+static bool maximumFpsEnabled;
+static unsigned footerFpsX100;
+static bool frameReady;
+static uint16_t *footerBackground;
+static void drawInformationOverlay(void);
 
 static const st7701_lcd_init_cmd_t initCommands[] = {
     {0xFF, (uint8_t[]){0x77, 0x01, 0x00, 0x00, 0x13}, 5, 0},
@@ -148,6 +156,9 @@ esp_err_t boardDisplayInit(void)
                                                        (void **)&framebuffers[0], (void **)&framebuffers[1]));
     memset(framebuffers[0], 0, panelBytes);
     memset(framebuffers[1], 0, panelBytes);
+    footerBackground = heap_caps_calloc(panelWidth * 26, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    if (!footerBackground)
+        return ESP_ERR_NO_MEM;
     return ESP_OK;
 }
 
@@ -169,8 +180,14 @@ uint16_t *boardBackBuffer(void)
     return framebuffers[backBuffer];
 }
 
-static void presentBackBuffer(void)
+static void presentBackBuffer(bool freshContent)
 {
+    uint16_t *footer = framebuffers[backBuffer] + (panelHeight - 26) * panelWidth;
+    if (freshContent)
+        memcpy(footerBackground, footer, panelWidth * 26 * sizeof(uint16_t));
+    else
+        memcpy(footer, footerBackground, panelWidth * 26 * sizeof(uint16_t));
+    drawInformationOverlay();
     while (xSemaphoreTake(frameDone, 0) == pdTRUE)
     {
     }
@@ -183,6 +200,21 @@ static void presentBackBuffer(void)
     portEXIT_CRITICAL(&flipLock);
     ESP_ERROR_CHECK(err);
     backBuffer ^= 1;
+    frameReady = true;
+}
+
+void boardInformationOverlay(bool enabled, unsigned fpsX100, bool maximumFps)
+{
+    bool redraw = informationEnabled != enabled || maximumFpsEnabled != maximumFps ||
+                  ((footerFpsX100 == 0) != (fpsX100 == 0));
+    informationEnabled = enabled;
+    maximumFpsEnabled = maximumFps;
+    footerFpsX100 = fpsX100;
+    if (!redraw || !frameReady)
+        return;
+    waitForBackBuffer();
+    memcpy(framebuffers[backBuffer], framebuffers[backBuffer ^ 1], panelBytes);
+    presentBackBuffer(false);
 }
 
 void boardPresent(const uint16_t *pixels)
@@ -190,7 +222,7 @@ void boardPresent(const uint16_t *pixels)
     waitForBackBuffer();
     if (pixels != framebuffers[backBuffer])
         memcpy(framebuffers[backBuffer], pixels, panelBytes);
-    presentBackBuffer();
+    presentBackBuffer(true);
 }
 
 static const uint8_t glyphs[][5] = {
@@ -233,6 +265,24 @@ static void text(const char *message, int y, int scale, uint16_t color)
     textAt(message, (panelWidth - strlen(message) * 6 * scale) / 2, y, scale, color);
 }
 
+void boardBatteryIndicator(int percent)
+{
+    if (percent == batteryPercent)
+        return;
+    batteryPercent = percent;
+    if (!frameReady)
+        return;
+    waitForBackBuffer();
+    memcpy(framebuffers[backBuffer], framebuffers[backBuffer ^ 1], panelBytes);
+    presentBackBuffer(false);
+}
+
+static void drawInformationOverlay(void)
+{
+    statusFooter status = {.enabled = informationEnabled, .fpsX100 = footerFpsX100, .batteryPercent = batteryPercent, .maxFps = maximumFpsEnabled};
+    statusFooterDraw(framebuffers[backBuffer], panelWidth, panelHeight, &status);
+}
+
 void boardStatus(const char *a, const char *b, const char *c)
 {
     waitForBackBuffer();
@@ -240,7 +290,7 @@ void boardStatus(const char *a, const char *b, const char *c)
     text(a, 300, 3, 0x07ff);
     text(b, 370, 2, 0xffff);
     text(c, 410, 2, 0xffff);
-    presentBackBuffer();
+    presentBackBuffer(true);
 }
 
 void boardButtonInit(void)
@@ -250,3 +300,11 @@ void boardButtonInit(void)
 }
 
 bool boardButtonDown(void) { return gpio_get_level(0) == 0; }
+
+void boardBatteryInit(void) {}
+bool boardBatteryRead(unsigned *millivolts, int *percent)
+{
+    *millivolts = 3850;
+    *percent = 50;
+    return true;
+}
