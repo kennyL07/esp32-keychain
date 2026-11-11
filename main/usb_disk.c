@@ -74,12 +74,22 @@ esp_err_t usbDiskInit(void)
     slot.cmd = 2;
     slot.d0 = 42;
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    esp_err_t err = sdmmc_host_init();
-    if (err == ESP_OK) err = sdmmc_host_init_slot(host.slot, &slot);
-    if (err == ESP_OK) err = sdmmc_card_init(&host, &card);
-    if (err != ESP_OK) {
-        snprintf(errorText, sizeof(errorText), "SD INIT 0X%X", (unsigned)err);
-        return ESP_OK;
+    esp_err_t err = ESP_FAIL;
+
+    // defaults change?
+    vTaskDelay(pdMS_TO_TICKS(200));
+    for (unsigned i = 0; i < 3; ++i) {
+        err = sdmmc_host_init();
+        if (err != ESP_OK) break;
+        err = sdmmc_host_init_slot(host.slot, &slot);
+        if (err != ESP_OK) {
+            sdmmc_host_deinit();
+            break;
+        }
+        err = sdmmc_card_init(&host, &card);
+        if (err == ESP_OK) break;
+        sdmmc_host_deinit_slot(host.slot);
+        vTaskDelay(pdMS_TO_TICKS(300));
     }
     tinyusb_msc_storage_config_t config = {
         .medium.card = &card,
