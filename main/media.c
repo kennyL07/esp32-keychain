@@ -34,6 +34,9 @@ mediaKind mediaKindForPath(const char *path)
     if (!strcasecmp(ext, ".mp4")) return mediaVideo;
     if (!strcasecmp(ext, ".png") || !strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg"))
         return mediaImage;
+    if(!strcasecmp(ext, ".heic"))
+        ELOG_ERROR("heic not supported")
+        return mediaUnknown
     return mediaUnknown;
 }
 
