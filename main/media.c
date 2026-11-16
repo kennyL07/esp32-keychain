@@ -172,11 +172,13 @@ typedef struct {
 static bool decode(videoDecoder *video, uint8_t *data, size_t size, uint32_t pts)
 {
     esp_h264_dec_in_frame_t input = {.raw_data = {.buffer = data, .len = size}, .pts = pts, .dts = pts};
+    bool retried = false;
     while (input.raw_data.len) {
         esp_h264_dec_out_frame_t out = {0};
         if (esp_h264_dec_process(video->decoder, &input, &out) != ESP_H264_ERR_OK ||
             input.consume > input.raw_data.len ||
-            !input.consume) return false;
+            (!input.consume && (!out.out_size || retried))) return false;
+        retried = input.consume == 0;
         if (out.out_size) {
             esp_h264_resolution_t dimensions;
             if (esp_h264_dec_get_resolution(video->params, &dimensions) != ESP_H264_ERR_OK ||

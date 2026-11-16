@@ -14,14 +14,14 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 #ifndef CONFIG_KEYCHAIN_BENCHMARK_FRAMES
 #define CONFIG_KEYCHAIN_BENCHMARK_FRAMES 0
 #endif
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/queue.h"
-#include "freertos/semphr.h"
 
 #define maxCards 128
 #define maxPath 537
@@ -174,10 +174,10 @@ static bool waitForFrame(int64_t *due, unsigned expectedGeneration)
         int64_t before = esp_timer_get_time();
         processCommands();
         if (generation != expectedGeneration) return false;
-        bool waitingForResume = state.paused;
-        if (!waitingForResume && before >= *due) return true;
+        bool paused = state.paused;
+        if (!paused && before >= *due) return true;
         vTaskDelay(pdMS_TO_TICKS(5));
-        if (waitingForResume) { int64_t delay = esp_timer_get_time() - before; *due += delay; pausedTime += delay; }
+        if (paused) { int64_t delay = esp_timer_get_time() - before; *due += delay; pausedTime += delay; }
     }
 }
 

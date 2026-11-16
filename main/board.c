@@ -170,6 +170,7 @@ static void waitForBackBuffer(void)
         if (xSemaphoreTake(frameDone, pdMS_TO_TICKS(250)) != pdTRUE && flipPending)
         {
             ESP_LOGE("board", "timed out");
+            ESP_ERROR_CHECK(ESP_ERR_TIMEOUT);
         }
     }
 }
