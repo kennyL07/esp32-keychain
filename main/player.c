@@ -469,7 +469,7 @@ void playerRun(void)
             if (generation == selectedGeneration) {
                 if (error) {
                     setError(error);
-                    boardStatus("MEDIA ERROR", kind == mediaVideo ? error : "", "");
+                    boardStatus("MEDIA ERROR", error, "");
                 }
                 waitUntilChanged(selectedGeneration);
             }

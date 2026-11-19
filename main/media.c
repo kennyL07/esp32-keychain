@@ -10,6 +10,7 @@
 #include "esp_extractor.h"
 #include "esp_mp4_extractor.h"
 #include "esp_h264_dec_sw.h"
+#include "codec_api.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -27,6 +28,7 @@
 #define maxImagePixels (1024 * 1024)
 #define maxVideoPixels (640 * 480)
 #define maxSample (128 * 1024)
+static char decoderError[40];
 
 mediaKind mediaKindForPath(const char *path)
 {
@@ -108,18 +110,17 @@ static unsigned clampByte(int value)
     return value;
 }
 
-static void renderI420(const uint8_t *buffer, unsigned stride, unsigned rows, unsigned width, unsigned height)
+static void renderI420(const uint8_t *yPlane, const uint8_t *uPlane, const uint8_t *vPlane,
+                       unsigned yStride, unsigned uvStride, unsigned width, unsigned height)
 {
     fit fit = fitScreen(width, height);
     uint16_t *pixels = boardBackBuffer();
     memset(pixels, 0, panelBytes);
-    const uint8_t *uPlane = buffer + stride * rows;
-    const uint8_t *vPlane = uPlane + stride * rows / 4;
     for (unsigned y = 0; y < fit.height; ++y) {
         unsigned row = ((2 * y + 1) * height) / (2 * fit.height);
-        const uint8_t *luma = buffer + row * stride;
-        const uint8_t *u = uPlane + (row / 2) * (stride / 2);
-        const uint8_t *v = vPlane + (row / 2) * (stride / 2);
+        const uint8_t *luma = yPlane + row * yStride;
+        const uint8_t *u = uPlane + (row / 2) * uvStride;
+        const uint8_t *v = vPlane + (row / 2) * uvStride;
         uint16_t *dst = pixels + (fit.y + y) * panelWidth + fit.x;
         for (unsigned x = 0; x < fit.width; ++x) {
             unsigned col = fit.srcX[x];
@@ -163,13 +164,26 @@ static unsigned annexBProfile(const uint8_t *data, size_t size)
 typedef struct {
     esp_h264_dec_handle_t decoder;
     esp_h264_dec_param_sw_handle_t params;
+    ISVCDecoder *advanced;
     unsigned width, height, fps;
     bool displayed, cancelled;
     mediaVideoPresent present;
     void *context;
 } videoDecoder;
 
-static bool decode(videoDecoder *video, uint8_t *data, size_t size, uint32_t pts)
+static void presentI420(videoDecoder *video, const uint8_t *y, const uint8_t *u, const uint8_t *v,
+                        unsigned yStride, unsigned uvStride, unsigned width, unsigned height, uint32_t pts)
+{
+    if (!video->present(pts, video->fps, video->context)) {
+        video->cancelled = true;
+        return;
+    }
+    renderI420(y, u, v, yStride, uvStride, width, height);
+    boardPresent(boardBackBuffer());
+    video->displayed = true;
+}
+
+static bool decodeBaseline(videoDecoder *video, uint8_t *data, size_t size, uint32_t pts)
 {
     esp_h264_dec_in_frame_t input = {.raw_data = {.buffer = data, .len = size}, .pts = pts, .dts = pts};
     bool retried = false;
@@ -189,13 +203,10 @@ static bool decode(videoDecoder *video, uint8_t *data, size_t size, uint32_t pts
                 return false;
             unsigned width = video->width < dimensions.width ? video->width : dimensions.width;
             unsigned height = video->height < dimensions.height ? video->height : dimensions.height;
-            if (!video->present(out.pts, video->fps, video->context)) {
-                video->cancelled = true;
-                return true;
-            }
-            renderI420(out.outbuf, dimensions.width, dimensions.height, width, height);
-            boardPresent(boardBackBuffer());
-            video->displayed = true;
+            size_t lumaSize = (size_t)dimensions.width * dimensions.height;
+            presentI420(video, out.outbuf, out.outbuf + lumaSize, out.outbuf + lumaSize * 5 / 4,
+                        dimensions.width, dimensions.width / 2, width, height, out.pts);
+            if (video->cancelled) return true;
         }
         input.raw_data.buffer += input.consume;
         input.raw_data.len -= input.consume;
@@ -203,8 +214,82 @@ static bool decode(videoDecoder *video, uint8_t *data, size_t size, uint32_t pts
     return true;
 }
 
+enum { profileBaseline = 66, profileMain = 77, profileHigh = 100 };
+
+static bool advancedProfile(unsigned profile)
+{
+    return profile == profileMain || profile == profileHigh;
+}
+
+static bool initDecoder(videoDecoder *video, unsigned profile)
+{
+    if (advancedProfile(profile)) {
+        if (WelsCreateDecoder(&video->advanced) != 0) return false;
+        SDecodingParam config = {
+            .uiTargetDqLayer = UINT8_MAX,
+            .sVideoProperty = {.size = sizeof(SVideoProperty), .eVideoBsType = VIDEO_BITSTREAM_AVC},
+        };
+        return (*video->advanced)->Initialize(video->advanced, &config) == 0;
+    }
+    esp_h264_dec_cfg_sw_t config = {.pic_type = ESP_H264_RAW_FMT_I420};
+    return esp_h264_dec_sw_new(&config, &video->decoder) == ESP_H264_ERR_OK &&
+        esp_h264_dec_open(video->decoder) == ESP_H264_ERR_OK &&
+        esp_h264_dec_sw_get_param_hd(video->decoder, &video->params) == ESP_H264_ERR_OK;
+}
+
+static bool presentAdvanced(videoDecoder *video, uint8_t *planes[3], const SBufferInfo *info)
+{
+    if (!info->iBufferStatus) return true;
+    int width = info->UsrData.sSystemBuffer.iWidth;
+    int height = info->UsrData.sSystemBuffer.iHeight;
+    int yStride = info->UsrData.sSystemBuffer.iStride[0];
+    int uvStride = info->UsrData.sSystemBuffer.iStride[1];
+    if (!planes[0] || !planes[1] || !planes[2] || width <= 0 || height <= 0 ||
+        width > 832 || height > 832 || width * height > maxVideoPixels ||
+        yStride < width || uvStride < (width + 1) / 2) return false;
+    presentI420(video, planes[0], planes[1], planes[2], yStride, uvStride, width, height,
+                (uint32_t)info->uiOutYuvTimeStamp);
+    return true;
+}
+
+static bool decodeAdvanced(videoDecoder *video, const uint8_t *data, size_t size, uint32_t pts)
+{
+    SBufferInfo info = {.uiInBsTimeStamp = pts};
+    uint8_t *planes[3] = {0};
+    DECODING_STATE result = (*video->advanced)->DecodeFrameNoDelay(video->advanced, data, size, planes, &info);
+    if (result & ~dsFramePending) {
+        snprintf(decoderError, sizeof(decoderError), "H264 ERROR 0X%X", result);
+        ESP_LOGE("media", "OpenH264 error 0x%x at %lu ms, free PSRAM %u, largest block %u",
+                 result, (unsigned long)pts,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        return false;
+    }
+    if (!presentAdvanced(video, planes, &info)) {
+        snprintf(decoderError, sizeof(decoderError), "H264 INVALID OUTPUT");
+        return false;
+    }
+    return true;
+}
+
+static bool drainAdvanced(videoDecoder *video)
+{
+    int endOfStream = 1;
+    if ((*video->advanced)->SetOption(video->advanced, DECODER_OPTION_END_OF_STREAM, &endOfStream))
+        return false;
+    while (!video->cancelled && !usbDiskRequested()) {
+        SBufferInfo info = {0};
+        uint8_t *planes[3] = {0};
+        if ((*video->advanced)->FlushFrame(video->advanced, planes, &info) != dsErrorFree ||
+            !presentAdvanced(video, planes, &info)) return false;
+        if (!info.iBufferStatus) break;
+    }
+    return true;
+}
+
 const char *mediaPlayVideo(const char *path, mediaVideoPresent present, void *context)
 {
+    decoderError[0] = 0;
     struct stat info;
     if (stat(path, &info) != 0 || info.st_size <= 0 || info.st_size > INT32_MAX)
         return "MP4 is unreadable";
@@ -227,15 +312,16 @@ const char *mediaPlayVideo(const char *path, mediaVideoPresent present, void *co
     esp_extractor_stream_info_t stream;
     error = "MP4 HEADER ERROR";
     if (esp_extractor_parse_stream(extractor) != ESP_EXTRACTOR_ERR_OK) goto done;
-    error = "NEEDS H264 BASELINE";
+    error = "H256 / HVEC not supported";
     if (esp_extractor_get_stream_info(extractor, ESP_EXTRACTOR_STREAM_TYPE_VIDEO, 0, &stream) != ESP_EXTRACTOR_ERR_OK ||
         stream.video_info.format != ESP_EXTRACTOR_VIDEO_FORMAT_H264) goto done;
     unsigned profile = 0;
     if (stream.spec_info && stream.spec_info_len >= 4) {
         profile = stream.spec_info[0] == 1 ? stream.spec_info[1] :
             annexBProfile(stream.spec_info, stream.spec_info_len);
-        if (profile && profile != 66) goto done;
     }
+    error = "video error";
+    if (profile && profile != profileBaseline && !advancedProfile(profile)) goto done;
     video.width = stream.video_info.width;
     video.height = stream.video_info.height;
     video.fps = stream.video_info.fps;
@@ -244,44 +330,49 @@ const char *mediaPlayVideo(const char *path, mediaVideoPresent present, void *co
         error = "MP4 FRAME TOO LARGE";
         goto done;
     }
-    esp_h264_dec_cfg_sw_t decoderConfig = {.pic_type = ESP_H264_RAW_FMT_I420};
-    error = "H264 INIT FAILED";
-    if (esp_h264_dec_sw_new(&decoderConfig, &video.decoder) != ESP_H264_ERR_OK ||
-        esp_h264_dec_open(video.decoder) != ESP_H264_ERR_OK ||
-        esp_h264_dec_sw_get_param_hd(video.decoder, &video.params) != ESP_H264_ERR_OK) goto done;
-
     error = "MP4 HAS NO PICTURES";
-    for (;;) {
+    while (!usbDiskRequested()) {
         esp_extractor_frame_info_t frame = {0};
         esp_extractor_err_t rc = esp_extractor_read_frame(extractor, &frame);
-        if (rc == ESP_EXTRACTOR_ERR_EOS) {
-            if (video.displayed) error = NULL;
-            break;
-        }
+        if (rc == ESP_EXTRACTOR_ERR_EOS) break;
         if (rc != ESP_EXTRACTOR_ERR_OK) {
             error = "MP4 FAIL";
-            break;
+            goto done;
         }
         bool valid = true;
         if (frame.stream_type == ESP_EXTRACTOR_STREAM_TYPE_VIDEO && frame.frame_size) {
             unsigned frameProfile = annexBProfile(frame.frame_buffer, frame.frame_size);
-            if (frameProfile && frameProfile != 66) {
-                error = "H264 ERROR";
+            if (!profile && frameProfile) profile = frameProfile;
+            if (frameProfile && (frameProfile != profile ||
+                (video.decoder && advancedProfile(profile)))) {
+                error = "H264 error";
+                valid = false;
+            } else if (profile && profile != profileBaseline && !advancedProfile(profile)) {
+                error = "H264 error";
+                valid = false;
+            } else if (!video.decoder && !video.advanced && !initDecoder(&video, profile)) {
+                error = "init failed";
                 valid = false;
             } else {
-                valid = startCode(frame.frame_buffer, frame.frame_size) &&
-                    decode(&video, frame.frame_buffer, frame.frame_size, frame.pts);
-                if (!valid) error = "H264 FAILED";
+                valid = startCode(frame.frame_buffer, frame.frame_size) && (video.advanced ?
+                    decodeAdvanced(&video, frame.frame_buffer, frame.frame_size, frame.pts) :
+                    decodeBaseline(&video, frame.frame_buffer, frame.frame_size, frame.pts));
+                if (!valid) error = decoderError[0] ? decoderError :
+                    video.advanced ? "INVALID H264 DATA" : "BASELINE DECODE FAILED";
             }
         }
         bool ended = EXTRACTOR_IS_EOS(frame.frame_flag);
         if (frame.frame_buffer) esp_extractor_release_frame(extractor, &frame);
-        if (video.cancelled || (ended && valid && video.displayed)) { error = NULL; break; }
-        if (!valid || ended) break;
+        if (!valid) goto done;
+        if (video.cancelled || ended) break;
         vTaskDelay(1);
     }
+    if (video.advanced && !video.cancelled && !usbDiskRequested() && !drainAdvanced(&video))
+        error = "H264 FAILED";
+    else if (video.displayed || video.cancelled || usbDiskRequested()) error = NULL;
 done:
     if (video.decoder) esp_h264_dec_del(video.decoder);
+    if (video.advanced) WelsDestroyDecoder(video.advanced);
     if (extractor) esp_extractor_close(extractor);
     fclose(input.file);
     return error;

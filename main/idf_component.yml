@@ -6,3 +6,6 @@ dependencies:
   espressif/esp_extractor: "1.0.7"
   espressif/esp_h264: "1.5.0"
   espressif/esp_tinyusb: "2.4.0"
+  openh264:
+    git: https://github.com/jonasborn/openh264-esp32.git
+    version: 4a7856e61919d2c7b580413151f3cfb1323a3585

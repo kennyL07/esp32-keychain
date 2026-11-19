@@ -134,6 +134,18 @@ dependencies:
     source:
       type: idf
     version: 6.1.0
+  openh264:
+    component_hash: 25f7ea87e189640d7b7c03482e48659f29870de54c986af5c104543a00c9c455
+    dependencies: []
+    source:
+      git: https://github.com/jonasborn/openh264-esp32.git
+      path: .
+      type: git
+    targets:
+    - esp32
+    - esp32s3
+    - esp32p4
+    version: 4a7856e61919d2c7b580413151f3cfb1323a3585
 direct_dependencies:
 - espressif/esp_extractor
 - espressif/esp_h264
@@ -142,6 +154,7 @@ direct_dependencies:
 - espressif/esp_new_jpeg
 - espressif/esp_tinyusb
 - idf
-manifest_hash: 5bd730e785097bb1c3ad81fd00a4ec5a45763e9189d1ed74b2f8e59bc49adc4d
+- openh264
+manifest_hash: 2d217a3e7cdcd52d4da3145dbb639fad0f739b5b709a33e9d9a32d6b3af503be
 target: esp32s3
 version: 3.0.0

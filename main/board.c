@@ -78,7 +78,7 @@ static const st7701_lcd_init_cmd_t initCommands[] = {
     {0x29, NULL, 0, 20}};
 
 static bool onFrameComplete(esp_lcd_panel_handle_t unused,
-                              const esp_lcd_rgb_panel_event_data_t *event, void *ctx)
+                            const esp_lcd_rgb_panel_event_data_t *event, void *ctx)
 {
     BaseType_t woken = pdFALSE;
     portENTER_CRITICAL_ISR(&flipLock);
@@ -156,7 +156,7 @@ esp_err_t boardDisplayInit(void)
                                                        (void **)&framebuffers[0], (void **)&framebuffers[1]));
     memset(framebuffers[0], 0, panelBytes);
     memset(framebuffers[1], 0, panelBytes);
-    footerBackground = heap_caps_calloc(panelWidth * 26, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    footerBackground = heap_caps_calloc(panelWidth * 26, sizeof(uint16_t), MALLOC_CAP_DEFAULT);
     if (!footerBackground)
         return ESP_ERR_NO_MEM;
     return ESP_OK;
@@ -238,6 +238,8 @@ static void textAt(const char *message, int x, int y, int scale, uint16_t color)
     for (int i = 0; i < length; ++i)
     {
         char c = message[i];
+        if (c >= 'a' && c <= 'z')
+            c -= 'a' - 'A';
         int glyph = c >= 'A' && c <= 'Z' ? c - 'A' : c >= '0' && c <= '9' ? c - '0' + 26
                                                                           : -1;
         static const uint8_t percentGlyph[5] = {0x63, 0x13, 0x08, 0x64, 0x63};
